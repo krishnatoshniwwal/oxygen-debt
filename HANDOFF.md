@@ -8,8 +8,9 @@ Part 1 §1 machine laws, §4 technique verdicts, §7 build order, §11 experimen
 - Rust, std only. **cargo exists only in WSL Ubuntu**:
   `wsl -e bash -c '. ~/.cargo/env; cd /mnt/c/Users/Krishna/Desktop/oxygen-debt && cargo build --release --offline'`.
   From Git Bash prefix `MSYS_NO_PATHCONV=1`; use `~/kw` in WSL for scratch (WSL `/tmp` is wiped).
-- The starter kit is in `kit/` (gitignored; never commit it): `KIR_SPEC.md`, `kirlib.py` (the exact
-  timing model = ground truth), `bench/*.kir` + `.in`, `machines/*.cfg`.
+- The starter kit is in `kit/` and is tracked in this repo (so a fresh clone has it): `KIR_SPEC.md`,
+  `kirlib.py` (the exact timing model = ground truth), `bench/*.kir` + `.in`, `machines/*.cfg`.
+  The rules say the kit must not be in the *submitted* repo: remove it before submitting.
 - **Regression check** (always before merging into main):
   `python3 tests/measure.py <kopt_bin> out.json` then `python3 tests/compare_runs.py base.json out.json`
   (100 bench programs × 5 machines, sample inputs + 3 variants each). Required: `fails=0`, nothing
