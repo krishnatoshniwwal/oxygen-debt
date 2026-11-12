@@ -604,7 +604,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 return Ok(text.to_string());
             }
         }
-        let ok = catch_unwind(AssertUnwindSafe(|| rf.same(&c.cp))).unwrap_or(false);
+        let ok = catch_unwind(AssertUnwindSafe(|| rf.same(&c.cp) && crate::validate::deep_check(&prog, &c.text, mc))).unwrap_or(false);
         prof("self-check", &mut t);
         if ok {
             return Ok(c.text.clone());

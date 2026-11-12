@@ -11,6 +11,8 @@
 #![allow(dead_code)]
 #[path = "../../kir.rs"]
 mod kir;
+#[path = "../../vgraph.rs"]
+mod vgraph;
 mod check;
 mod gen;
 mod minimize;
@@ -30,6 +32,7 @@ pub struct Ctx {
     pub slow: f64,
     pub fail_dir: PathBuf,
     pub det_every: usize,
+    pub validator: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +49,8 @@ pub struct Stats {
     pub changed: bool,
     pub ran: usize,
     pub outcomes: [usize; 5],
+    /// 0 = not applicable, 1 = unproved, 2 = proved by the value-graph validator
+    pub proof: u8,
 }
 
 fn first_line(s: &str) -> String {
@@ -114,7 +119,19 @@ pub fn eval(ctx: &Ctx, tag: &str, text: &str, mc: &Machine, prof: Option<&str>, 
     st.outcomes = c.outcomes;
     st.orig_cycles = c.orig_cycles;
     st.opt_cycles = c.opt_cycles;
+    let verdict = if ctx.validator { Some(std::panic::catch_unwind(|| vgraph::prove(&orig, &newp))) } else { None };
+    if let Some(v) = &verdict {
+        match v {
+            Ok(vgraph::Verdict::Proved) => st.proof = 2,
+            Ok(vgraph::Verdict::Unproved(_)) => st.proof = 1,
+            Ok(vgraph::Verdict::NotApplicable(_)) => st.proof = 0,
+            Err(_) => probs.push(Problem { kind: "validator-panic".into(), msg: "vgraph::prove panicked".into() }),
+        }
+    }
     if let Some(m) = c.mismatch {
+        if st.proof == 2 {
+            probs.push(Problem { kind: "VALIDATOR-UNSOUND".into(), msg: "proved equal but runs differ".into() });
+        }
         probs.push(Problem { kind: "mismatch".into(), msg: m });
     } else if c.opt_cycles > c.orig_cycles * 1.0005 {
         probs.push(Problem { kind: "regress".into(), msg: format!("{:.0} -> {:.0} cycles ({} of {} inputs worse)", c.orig_cycles, c.opt_cycles, c.worse_inputs, c.ran) });
@@ -177,6 +194,7 @@ struct Summary {
     orig_cycles: f64,
     opt_cycles: f64,
     outcomes: [usize; 5],
+    proof: [usize; 3],
 }
 
 fn record(sum: &Mutex<Summary>, tag: &str, probs: &[Problem], st: &Stats) {
@@ -192,6 +210,7 @@ fn record(sum: &Mutex<Summary>, tag: &str, probs: &[Problem], st: &Stats) {
     for k in 0..5 {
         s.outcomes[k] += st.outcomes[k];
     }
+    s.proof[st.proof as usize] += 1;
     s.opt_cycles += st.opt_cycles;
     for p in probs {
         *s.counts.entry(p.kind.clone()).or_insert(0) += 1;
@@ -213,6 +232,7 @@ fn print_summary(sum: &Mutex<Summary>) -> i32 {
     println!("cases {}  changed by kopt {}  slowest kopt run {:.2}s", s.cases, s.changed, s.secs_max);
     println!("cycles on test inputs: original {:.0}  optimized {:.0}  ratio {:.4}", s.orig_cycles, s.opt_cycles, if s.orig_cycles > 0.0 { s.opt_cycles / s.orig_cycles } else { 1.0 });
     println!("original outcomes over all inputs [ret, div0, badaddr, trap, timeout]: {:?}", s.outcomes);
+    println!("value-graph validator: not applicable {}, unproved {}, proved {}", s.proof[0], s.proof[1], s.proof[2]);
     println!("problem counts: {:?}", s.counts);
     let serious = s.counts.iter().filter(|(k, _)| is_serious(k)).map(|(_, v)| *v).sum::<usize>();
     if serious > 0 {
@@ -223,7 +243,7 @@ fn print_summary(sum: &Mutex<Summary>) -> i32 {
 }
 
 fn new_summary() -> Mutex<Summary> {
-    Mutex::new(Summary { counts: BTreeMap::new(), examples: vec![], cases: 0, secs_max: 0.0, changed: 0, orig_cycles: 0.0, opt_cycles: 0.0, outcomes: [0; 5] })
+    Mutex::new(Summary { counts: BTreeMap::new(), examples: vec![], cases: 0, secs_max: 0.0, changed: 0, orig_cycles: 0.0, opt_cycles: 0.0, outcomes: [0; 5], proof: [0; 3] })
 }
 
 fn parallel<F: Fn(usize) + Sync>(n: usize, jobs: usize, f: F) {
@@ -313,6 +333,7 @@ fn make_ctx(a: &Args, name: &str) -> Ctx {
         slow: a.num("slow", 4.0f64),
         fail_dir: PathBuf::from("out/kfuzz/fail").join(name),
         det_every: a.num("det", 10usize),
+        validator: !a.kv.contains_key("novalid"),
     }
 }
 

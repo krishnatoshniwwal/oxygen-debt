@@ -9,6 +9,8 @@ mod passes2;
 mod passes3;
 mod ranges;
 mod ssa;
+mod validate;
+mod vgraph;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
