@@ -1,0 +1,40 @@
+; name: word_count
+; category: state
+; description: count words (runs of non-zero low bits)
+; sample input: word_count.in
+
+func word_count(v0)
+entry:
+  and v1, v0, 63
+  mov v0, v1
+  const v2, 0
+  const v3, 0
+  const v4, 0
+  jmp for_head1
+for_head1:
+  lt v5, v4, v0
+  br v5, for_body2, for_exit3
+for_body2:
+  load v6, v4
+  and v7, v6, 7
+  eq v8, v7, 0
+  br v8, then4, else6
+then4:
+  const v2, 0
+  jmp endif5
+else6:
+  eq v9, v2, 0
+  br v9, then7, endif8
+then7:
+  add v10, v3, 1
+  mov v3, v10
+  jmp endif8
+endif8:
+  const v2, 1
+  jmp endif5
+endif5:
+  add v11, v4, 1
+  mov v4, v11
+  jmp for_head1
+for_exit3:
+  ret v3

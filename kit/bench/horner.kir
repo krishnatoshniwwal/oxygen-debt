@@ -1,0 +1,28 @@
+; name: horner
+; category: loops
+; description: degree-7 polynomial evaluated with Horner, coefficients in memory
+; sample input: horner.in
+
+func horner(v0)
+entry:
+  const v1, 255
+  and v2, v0, v1
+  mov v0, v2
+  const v3, 0
+  const v4, 0
+  jmp for_head1
+for_head1:
+  const v5, 8
+  lt v6, v4, v5
+  br v6, for_body2, for_exit3
+for_body2:
+  mul v7, v3, v0
+  load v8, v4
+  add v9, v7, v8
+  mov v3, v9
+  const v10, 1
+  add v11, v4, v10
+  mov v4, v11
+  jmp for_head1
+for_exit3:
+  ret v3

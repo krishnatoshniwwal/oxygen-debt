@@ -1,0 +1,47 @@
+; name: insertion_sort
+; category: arrays
+; description: insertion sort (signed)
+; sample input: insertion_sort.in
+
+func insertion_sort(v0)
+entry:
+  and v1, v0, 15
+  mov v0, v1
+  const v2, 1
+  jmp for_head1
+for_head1:
+  lt v3, v2, v0
+  br v3, for_body2, for_exit3
+for_body2:
+  load v5, v2
+  mov v4, v5
+  sub v7, v2, 1
+  mov v6, v7
+  jmp while_head4
+while_head4:
+  lt v9, v6, 0
+  eq v8, v9, 0
+  br v8, while_body5, while_exit6
+while_body5:
+  load v10, v6
+  lt v11, v4, v10
+  br v11, then7, else9
+then7:
+  load v12, v6
+  add v13, v6, 1
+  store v13, v12
+  sub v14, v6, 1
+  mov v6, v14
+  jmp endif8
+else9:
+  jmp while_exit6
+endif8:
+  jmp while_head4
+while_exit6:
+  add v15, v6, 1
+  store v15, v4
+  add v16, v2, 1
+  mov v2, v16
+  jmp for_head1
+for_exit3:
+  ret v0

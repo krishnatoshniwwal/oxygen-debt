@@ -1,0 +1,27 @@
+; name: addsh_index
+; category: fused
+; description: a + (i << 3) patterns (shift-and-add)
+; sample input: addsh_index.in
+
+func addsh_index(v0)
+entry:
+  and v1, v0, 31
+  mov v0, v1
+  const v2, 0
+  jmp for_head1
+for_head1:
+  lt v3, v2, v0
+  br v3, for_body2, for_exit3
+for_body2:
+  shl v5, v2, 2
+  load v6, v5
+  mov v4, v6
+  shl v7, v2, 3
+  add v8, v4, v7
+  add v9, 200, v2
+  store v9, v8
+  add v10, v2, 1
+  mov v2, v10
+  jmp for_head1
+for_exit3:
+  ret v0

@@ -1,0 +1,7 @@
+# branch profile for multi_exit: edge FROM TO COUNT (CFG edges taken in a typical run)
+edge entry head 1
+edge head body 40
+edge body check 40
+edge check next 40
+edge next head 40
+edge head exit_a 1

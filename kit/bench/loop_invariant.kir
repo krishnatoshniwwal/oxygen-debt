@@ -1,0 +1,32 @@
+; name: loop_invariant
+; category: junk
+; description: loop-invariant computation inside a loop
+; sample input: loop_invariant.in
+
+func loop_invariant(v0, v1, v2)
+entry:
+  const v3, 63
+  and v4, v0, v3
+  mov v0, v4
+  const v5, 0
+  const v6, 0
+  jmp for_head1
+for_head1:
+  lt v7, v6, v0
+  br v7, for_body2, for_exit3
+for_body2:
+  mul v9, v1, v2
+  const v10, 7
+  add v11, v9, v10
+  mov v8, v11
+  mul v13, v8, v8
+  mov v12, v13
+  add v14, v5, v12
+  add v15, v14, v6
+  mov v5, v15
+  const v16, 1
+  add v17, v6, v16
+  mov v6, v17
+  jmp for_head1
+for_exit3:
+  ret v5

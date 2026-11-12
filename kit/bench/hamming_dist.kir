@@ -1,0 +1,39 @@
+; name: hamming_dist
+; category: bits
+; description: total Hamming distance between two arrays (at 0 and 32)
+; sample input: hamming_dist.in
+
+func hamming_dist(v0)
+entry:
+  and v1, v0, 31
+  mov v0, v1
+  const v2, 0
+  const v3, 0
+  jmp for_head1
+for_head1:
+  lt v4, v3, v0
+  br v4, for_body2, for_exit3
+for_body2:
+  load v6, v3
+  add v7, 32, v3
+  load v8, v7
+  xor v9, v6, v8
+  mov v5, v9
+  jmp while_head4
+while_head4:
+  eq v11, v5, 0
+  eq v10, v11, 0
+  br v10, while_body5, while_exit6
+while_body5:
+  sub v12, v5, 1
+  and v13, v5, v12
+  mov v5, v13
+  add v14, v2, 1
+  mov v2, v14
+  jmp while_head4
+while_exit6:
+  add v15, v3, 1
+  mov v3, v15
+  jmp for_head1
+for_exit3:
+  ret v2

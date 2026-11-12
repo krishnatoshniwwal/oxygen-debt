@@ -1,0 +1,12 @@
+; name: dead_div_trap
+; category: effects
+; description: an unused division sits in the code: it must still trap when d is 0
+; sample input: dead_div_trap.in
+
+func dead_div_trap(v0, v1)
+entry:
+  div v3, v0, v1
+  mov v2, v3
+  const v4, 1
+  add v5, v0, v4
+  ret v5

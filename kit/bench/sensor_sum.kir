@@ -1,0 +1,30 @@
+; name: sensor_sum
+; category: effects
+; description: reads a volatile sensor twice per round (the second reading is dropped) and logs a running total
+; sample input: sensor_sum.in
+
+func sensor_sum(v0)
+entry:
+  and v1, v0, 15
+  mov v0, v1
+  const v2, 0
+  const v3, 0
+  jmp for_head1
+for_head1:
+  lt v4, v3, v0
+  br v4, for_body2, for_exit3
+for_body2:
+  vload v6, 1
+  mov v5, v6
+  vload v8, 1
+  mov v7, v8
+  add v9, v2, v5
+  mov v2, v9
+  vstore 2, v2
+  mul v11, v5, 3
+  mov v10, v11
+  add v12, v3, 1
+  mov v3, v12
+  jmp for_head1
+for_exit3:
+  ret v2

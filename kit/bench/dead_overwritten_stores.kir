@@ -1,0 +1,36 @@
+; name: dead_overwritten_stores
+; category: junk
+; description: stores that are overwritten at once, and a store that must stay
+; sample input: dead_overwritten_stores.in
+
+func dead_overwritten_stores(v0)
+entry:
+  const v1, 63
+  and v2, v0, v1
+  mov v0, v2
+  const v3, 0
+  jmp for_head1
+for_head1:
+  lt v4, v3, v0
+  br v4, for_body2, for_exit3
+for_body2:
+  const v5, 0
+  const v6, 200
+  add v7, v6, v3
+  store v7, v5
+  const v8, 2
+  mul v9, v3, v8
+  const v10, 200
+  add v11, v10, v3
+  store v11, v9
+  const v12, 400
+  add v13, v12, v3
+  store v13, v3
+  const v14, 1
+  add v15, v3, v14
+  mov v3, v15
+  jmp for_head1
+for_exit3:
+  const v16, 200
+  load v17, v16
+  ret v17

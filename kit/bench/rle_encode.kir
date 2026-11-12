@@ -1,0 +1,52 @@
+; name: rle_encode
+; category: state
+; description: run-length encoding; writes (value, count) pairs from address 100
+; sample input: rle_encode.in
+
+func rle_encode(v0)
+entry:
+  and v1, v0, 31
+  mov v0, v1
+  eq v2, v0, 0
+  br v2, then1, endif2
+then1:
+  ret 0
+endif2:
+  const v3, 100
+  load v5, 0
+  mov v4, v5
+  const v6, 1
+  const v7, 1
+  jmp for_head3
+for_head3:
+  lt v8, v7, v0
+  br v8, for_body4, for_exit5
+for_body4:
+  load v9, v7
+  eq v10, v9, v4
+  br v10, then6, else8
+then6:
+  add v11, v6, 1
+  mov v6, v11
+  jmp endif7
+else8:
+  store v3, v4
+  add v12, v3, 1
+  store v12, v6
+  add v13, v3, 2
+  mov v3, v13
+  load v14, v7
+  mov v4, v14
+  const v6, 1
+  jmp endif7
+endif7:
+  add v15, v7, 1
+  mov v7, v15
+  jmp for_head3
+for_exit5:
+  store v3, v4
+  add v16, v3, 1
+  store v16, v6
+  add v17, v3, 2
+  sub v18, v17, 100
+  ret v18

@@ -1,0 +1,25 @@
+; name: prefix_sum
+; category: arrays
+; description: in-place prefix sums
+; sample input: prefix_sum.in
+
+func prefix_sum(v0)
+entry:
+  and v1, v0, 63
+  mov v0, v1
+  const v2, 1
+  jmp for_head1
+for_head1:
+  lt v3, v2, v0
+  br v3, for_body2, for_exit3
+for_body2:
+  load v4, v2
+  sub v5, v2, 1
+  load v6, v5
+  add v7, v4, v6
+  store v2, v7
+  add v8, v2, 1
+  mov v2, v8
+  jmp for_head1
+for_exit3:
+  ret v0

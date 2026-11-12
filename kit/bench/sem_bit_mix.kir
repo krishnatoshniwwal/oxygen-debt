@@ -1,0 +1,17 @@
+; name: sem_bit_mix
+; category: semantics
+; description: bit tricks with not, and, or, xor on raw arguments
+; sample input: sem_bit_mix.in
+
+func sem_bit_mix(v0, v1)
+entry:
+  and v2, v0, v1
+  xor v3, v0, v1
+  or v4, v2, v3
+  xor v5, v0, 0xFFFFFFFF
+  and v6, v5, v1
+  sub v7, v4, v6
+  xor v8, v1, 0xFFFFFFFF
+  or v9, v0, v8
+  add v10, v7, v9
+  ret v10

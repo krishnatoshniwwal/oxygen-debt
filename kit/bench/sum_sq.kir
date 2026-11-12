@@ -1,0 +1,32 @@
+; name: sum_sq
+; category: loops
+; description: sum of squares below n, with redundant temporaries
+; sample input: sum_sq.in
+
+func sum_sq(v0)
+entry:
+  const v1, 63
+  and v2, v0, v1
+  mov v0, v2
+  const v3, 0
+  const v4, 0
+  jmp for_head1
+for_head1:
+  lt v5, v4, v0
+  br v5, for_body2, for_exit3
+for_body2:
+  mul v7, v4, v4
+  mov v6, v7
+  const v9, 4
+  mul v10, v4, v9
+  mov v8, v10
+  mul v12, v4, v4
+  mov v11, v12
+  add v13, v3, v11
+  mov v3, v13
+  const v14, 1
+  add v15, v4, v14
+  mov v4, v15
+  jmp for_head1
+for_exit3:
+  ret v3

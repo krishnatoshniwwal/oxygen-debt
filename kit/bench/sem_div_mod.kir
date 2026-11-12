@@ -1,0 +1,23 @@
+; name: sem_div_mod
+; category: semantics
+; description: signed division and remainder, also by constants, on raw arguments (-2147483648 / -1 included)
+; sample input: sem_div_mod.in
+
+func sem_div_mod(v0, v1)
+entry:
+  const v2, 500
+  store v2, v0
+  div v4, v0, v1
+  mov v3, v4
+  mod v6, v0, v1
+  mov v5, v6
+  const v7, 3
+  mul v8, v3, v7
+  add v9, v8, v5
+  const v10, 8
+  div v11, v0, v10
+  add v12, v9, v11
+  const v13, 16
+  mod v14, v0, v13
+  add v15, v12, v14
+  ret v15

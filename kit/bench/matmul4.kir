@@ -1,0 +1,65 @@
+; name: matmul4
+; category: arrays
+; description: 4x4 matrix multiply (A at 0, B at 16, C at 32)
+; sample input: matmul4.in
+
+func matmul4()
+entry:
+  const v0, 0
+  jmp for_head1
+for_head1:
+  const v1, 4
+  lt v2, v0, v1
+  br v2, for_body2, for_exit3
+for_body2:
+  const v3, 0
+  jmp for_head4
+for_head4:
+  const v4, 4
+  lt v5, v3, v4
+  br v5, for_body5, for_exit6
+for_body5:
+  const v6, 0
+  const v7, 0
+  jmp for_head7
+for_head7:
+  const v8, 4
+  lt v9, v7, v8
+  br v9, for_body8, for_exit9
+for_body8:
+  const v10, 4
+  mul v11, v0, v10
+  add v12, v11, v7
+  load v13, v12
+  const v14, 16
+  const v15, 4
+  mul v16, v7, v15
+  add v17, v14, v16
+  add v18, v17, v3
+  load v19, v18
+  mul v20, v13, v19
+  add v21, v6, v20
+  mov v6, v21
+  const v22, 1
+  add v23, v7, v22
+  mov v7, v23
+  jmp for_head7
+for_exit9:
+  const v24, 32
+  const v25, 4
+  mul v26, v0, v25
+  add v27, v24, v26
+  add v28, v27, v3
+  store v28, v6
+  const v29, 1
+  add v30, v3, v29
+  mov v3, v30
+  jmp for_head4
+for_exit6:
+  const v31, 1
+  add v32, v0, v31
+  mov v0, v32
+  jmp for_head1
+for_exit3:
+  const v33, 0
+  ret v33

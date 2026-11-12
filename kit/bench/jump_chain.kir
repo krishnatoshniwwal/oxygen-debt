@@ -1,0 +1,30 @@
+; name: jump_chain
+; category: control
+; description: blocks that only contain a jump, and a branch whose two targets are the same block
+; sample input: jump_chain.in
+
+func jump_chain(v0)
+entry:
+  and v1, v0, 31
+  jmp hop1
+hop1:
+  jmp hop2
+hop2:
+  br v1, work, work
+work:
+  const v2, 0
+  const v3, 0
+  jmp test
+test:
+  lt v4, v3, v1
+  br v4, step, hop3
+step:
+  add v2, v2, v3
+  add v3, v3, 1
+  jmp test
+hop3:
+  jmp hop4
+hop4:
+  jmp finish
+finish:
+  ret v2

@@ -1,0 +1,52 @@
+; optimized version of bench/spill_storm.kir (written by a prototype optimizer)
+func spill_storm(v6)
+entry:
+  and v6, v6, 63
+  const v1, 1
+  const v5, 2
+  const v4, 3
+  const v3, 4
+  const v8, 5
+  const v9, 6
+  const v2, 7
+  const v10, 8
+  const v12, 9
+  const v13, 10
+  const v0, 11
+  const v14, 12
+  const v11, 0
+  jmp for_head1
+for_head1:
+  lt v7, v11, v6
+  br v7, for_body2, for_exit3
+for_body2:
+  add v1, v1, v5
+  xor v5, v5, v4
+  add v4, v4, v3
+  add v4, v4, v11
+  xor v3, v3, v8
+  add v8, v8, v9
+  xor v9, v9, v2
+  add v2, v2, v10
+  add v2, v2, v11
+  xor v10, v10, v12
+  add v12, v12, v13
+  xor v13, v13, v0
+  add v0, v0, v14
+  add v0, v0, v11
+  xor v14, v14, v1
+  add v11, v11, 1
+  jmp for_head1
+for_exit3:
+  add v1, v1, v5
+  add v1, v1, v4
+  add v1, v1, v3
+  add v1, v1, v8
+  add v1, v1, v9
+  add v1, v1, v2
+  add v1, v1, v10
+  add v1, v1, v12
+  add v1, v1, v13
+  add v0, v1, v0
+  add v0, v0, v14
+  ret v0

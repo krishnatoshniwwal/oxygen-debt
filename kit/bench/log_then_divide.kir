@@ -1,0 +1,14 @@
+; name: log_then_divide
+; category: effects
+; description: stores and volatile writes happen before a division that may trap
+; sample input: log_then_divide.in
+
+func log_then_divide(v0, v1)
+entry:
+  store 400, v0
+  vstore 1, v0
+  div v3, v0, v1
+  mov v2, v3
+  store 401, v2
+  vstore 2, v2
+  ret v2

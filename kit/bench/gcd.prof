@@ -1,0 +1,5 @@
+# branch profile for gcd: edge FROM TO COUNT (CFG edges taken in a typical run)
+edge entry while_head1 1
+edge while_head1 while_body2 3
+edge while_body2 while_head1 3
+edge while_head1 while_exit3 1

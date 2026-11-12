@@ -1,0 +1,29 @@
+; name: reverse_array
+; category: arrays
+; description: reverse an array in place
+; sample input: reverse_array.in
+
+func reverse_array(v0)
+entry:
+  and v1, v0, 31
+  mov v0, v1
+  const v2, 0
+  sub v4, v0, 1
+  mov v3, v4
+  jmp while_head1
+while_head1:
+  lt v5, v2, v3
+  br v5, while_body2, while_exit3
+while_body2:
+  load v7, v2
+  mov v6, v7
+  load v8, v3
+  store v2, v8
+  store v3, v6
+  add v9, v2, 1
+  mov v2, v9
+  sub v10, v3, 1
+  mov v3, v10
+  jmp while_head1
+while_exit3:
+  ret v0

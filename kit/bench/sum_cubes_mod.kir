@@ -1,0 +1,29 @@
+; name: sum_cubes_mod
+; category: loops
+; description: sum of cubes with a modulo in every step
+; sample input: sum_cubes_mod.in
+
+func sum_cubes_mod(v0)
+entry:
+  const v1, 63
+  and v2, v0, v1
+  mov v0, v2
+  const v3, 0
+  const v4, 0
+  jmp for_head1
+for_head1:
+  lt v5, v4, v0
+  br v5, for_body2, for_exit3
+for_body2:
+  mul v6, v4, v4
+  mul v7, v6, v4
+  add v8, v3, v7
+  const v9, 1009
+  mod v10, v8, v9
+  mov v3, v10
+  const v11, 1
+  add v12, v4, v11
+  mov v4, v12
+  jmp for_head1
+for_exit3:
+  ret v3

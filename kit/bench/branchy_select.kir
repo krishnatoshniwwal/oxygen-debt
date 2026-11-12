@@ -1,0 +1,46 @@
+; name: branchy_select
+; category: junk
+; description: branches that could be selects
+; sample input: branchy_select.in
+
+func branchy_select(v0)
+entry:
+  and v1, v0, 63
+  mov v0, v1
+  const v2, 0
+  const v3, 0
+  jmp for_head1
+for_head1:
+  lt v4, v3, v0
+  br v4, for_body2, for_exit3
+for_body2:
+  load v6, v3
+  mov v5, v6
+  lt v7, 100, v5
+  br v7, then4, else6
+then4:
+  mov v8, v5
+  jmp endif5
+else6:
+  const v8, 100
+  jmp endif5
+endif5:
+  and v9, v5, 1
+  eq v10, v9, 1
+  br v10, then7, else9
+then7:
+  add v12, v8, 1
+  mov v11, v12
+  jmp endif8
+else9:
+  sub v13, v8, 1
+  mov v11, v13
+  jmp endif8
+endif8:
+  add v14, v2, v11
+  mov v2, v14
+  add v15, v3, 1
+  mov v3, v15
+  jmp for_head1
+for_exit3:
+  ret v2

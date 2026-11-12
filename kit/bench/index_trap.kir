@@ -1,0 +1,13 @@
+; name: index_trap
+; category: effects
+; description: index computed from the argument: traps when the address is too large
+; sample input: index_trap.in
+
+func index_trap(v0)
+entry:
+  mul v2, v0, 16
+  mov v1, v2
+  store v1, v0
+  load v3, v1
+  add v4, v3, 1
+  ret v4

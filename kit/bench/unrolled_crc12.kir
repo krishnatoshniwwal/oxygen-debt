@@ -1,0 +1,172 @@
+; name: unrolled_crc12
+; category: large
+; description: twelve unrolled CRC steps over two bytes
+; sample input: unrolled_crc12.in
+
+func unrolled_crc12(v0, v1)
+entry:
+  const v2, 0xFFFFFFFF
+  and v3, v0, 255
+  xor v4, v2, v3
+  mov v2, v4
+  and v5, v2, 1
+  eq v6, v5, 1
+  br v6, then1, else3
+then1:
+  shr v7, v2, 1
+  xor v8, v7, 0xEDB88320
+  mov v2, v8
+  jmp endif2
+else3:
+  shr v9, v2, 1
+  mov v2, v9
+  jmp endif2
+endif2:
+  and v10, v2, 1
+  eq v11, v10, 1
+  br v11, then4, else6
+then4:
+  shr v12, v2, 1
+  xor v13, v12, 0xEDB88320
+  mov v2, v13
+  jmp endif5
+else6:
+  shr v14, v2, 1
+  mov v2, v14
+  jmp endif5
+endif5:
+  and v15, v2, 1
+  eq v16, v15, 1
+  br v16, then7, else9
+then7:
+  shr v17, v2, 1
+  xor v18, v17, 0xEDB88320
+  mov v2, v18
+  jmp endif8
+else9:
+  shr v19, v2, 1
+  mov v2, v19
+  jmp endif8
+endif8:
+  and v20, v2, 1
+  eq v21, v20, 1
+  br v21, then10, else12
+then10:
+  shr v22, v2, 1
+  xor v23, v22, 0xEDB88320
+  mov v2, v23
+  jmp endif11
+else12:
+  shr v24, v2, 1
+  mov v2, v24
+  jmp endif11
+endif11:
+  and v25, v2, 1
+  eq v26, v25, 1
+  br v26, then13, else15
+then13:
+  shr v27, v2, 1
+  xor v28, v27, 0xEDB88320
+  mov v2, v28
+  jmp endif14
+else15:
+  shr v29, v2, 1
+  mov v2, v29
+  jmp endif14
+endif14:
+  and v30, v2, 1
+  eq v31, v30, 1
+  br v31, then16, else18
+then16:
+  shr v32, v2, 1
+  xor v33, v32, 0xEDB88320
+  mov v2, v33
+  jmp endif17
+else18:
+  shr v34, v2, 1
+  mov v2, v34
+  jmp endif17
+endif17:
+  and v35, v2, 1
+  eq v36, v35, 1
+  br v36, then19, else21
+then19:
+  shr v37, v2, 1
+  xor v38, v37, 0xEDB88320
+  mov v2, v38
+  jmp endif20
+else21:
+  shr v39, v2, 1
+  mov v2, v39
+  jmp endif20
+endif20:
+  and v40, v2, 1
+  eq v41, v40, 1
+  br v41, then22, else24
+then22:
+  shr v42, v2, 1
+  xor v43, v42, 0xEDB88320
+  mov v2, v43
+  jmp endif23
+else24:
+  shr v44, v2, 1
+  mov v2, v44
+  jmp endif23
+endif23:
+  and v45, v1, 255
+  xor v46, v2, v45
+  mov v2, v46
+  and v47, v2, 1
+  eq v48, v47, 1
+  br v48, then25, else27
+then25:
+  shr v49, v2, 1
+  xor v50, v49, 0xEDB88320
+  mov v2, v50
+  jmp endif26
+else27:
+  shr v51, v2, 1
+  mov v2, v51
+  jmp endif26
+endif26:
+  and v52, v2, 1
+  eq v53, v52, 1
+  br v53, then28, else30
+then28:
+  shr v54, v2, 1
+  xor v55, v54, 0xEDB88320
+  mov v2, v55
+  jmp endif29
+else30:
+  shr v56, v2, 1
+  mov v2, v56
+  jmp endif29
+endif29:
+  and v57, v2, 1
+  eq v58, v57, 1
+  br v58, then31, else33
+then31:
+  shr v59, v2, 1
+  xor v60, v59, 0xEDB88320
+  mov v2, v60
+  jmp endif32
+else33:
+  shr v61, v2, 1
+  mov v2, v61
+  jmp endif32
+endif32:
+  and v62, v2, 1
+  eq v63, v62, 1
+  br v63, then34, else36
+then34:
+  shr v64, v2, 1
+  xor v65, v64, 0xEDB88320
+  mov v2, v65
+  jmp endif35
+else36:
+  shr v66, v2, 1
+  mov v2, v66
+  jmp endif35
+endif35:
+  xor v67, v2, 0xFFFFFFFF
+  ret v67

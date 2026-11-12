@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""ksim - run a KIR program on the Kiln machine and report the exact cycle count.
+
+Usage:
+  ksim PROG.kir [--machine machine.cfg] [--input FILE.in] [--max-steps N]
+                [--verbose] [--trace [N]]
+
+If --input is not given and a file with the same name but the ending .in sits next
+to the program (bench/sum_sq.kir -> bench/sum_sq.in), that file is used automatically.
+
+ksim refuses to run a program that has not been checked by kvalidate.
+Exit codes: 0 = program finished (returned or trapped), 2 = error, 3 = step limit reached.
+"""
+import argparse
+import os
+import signal
+import sys
+
+if hasattr(signal, 'SIGPIPE'):          # no traceback when the output is piped into head
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import kirlib as K  # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(prog='ksim', description='Run a KIR program and count cycles.')
+    ap.add_argument('program')
+    ap.add_argument('--machine', default=None, help='machine config (default: machines/machine_default.cfg next to ksim)')
+    ap.add_argument('--input', default=None,
+                    help='input file with args / mem / vin lines (default: PROG.in next to the program, if it exists)')
+    ap.add_argument('--max-steps', type=int, default=K.DEFAULT_MAX_STEPS,
+                    help='stop after this many executed instructions (default %d)' % K.DEFAULT_MAX_STEPS)
+    ap.add_argument('--verbose', action='store_true', help='also print the volatile log and non-zero memory words')
+    ap.add_argument('--trace', nargs='?', const=50, type=int, default=None, metavar='N',
+                    help='print the first N executed instructions with their issue cycles (default 50)')
+    opts = ap.parse_args()
+
+    machine_path = opts.machine or os.path.join(os.path.dirname(os.path.realpath(__file__)), 'machines', 'machine_default.cfg')
+    try:
+        if not os.path.exists(opts.program):
+            raise K.KirError("file not found: %s" % opts.program)
+        msg = K.check_stamp(opts.program)
+        if msg:
+            raise K.KirError(msg)
+        try:
+            prog = K.load_program(opts.program)
+        except K.KirError as e:
+            raise K.KirError("%s: %s" % (opts.program, e))
+        mc = K.load_machine(machine_path)
+        try:
+            K.check_machine_features(prog, mc)
+        except K.KirError as e:
+            raise K.KirError("%s: %s" % (opts.program, e))
+        input_path = opts.input
+        if input_path is None:
+            guess = os.path.splitext(opts.program)[0] + '.in'
+            if os.path.exists(guess):
+                input_path = guess
+        inp = K.load_input(input_path, len(prog.params)) if input_path else \
+            K.Inputs([0] * len(prog.params), [], {})
+    except K.KirError as e:
+        sys.stderr.write("ERROR: %s\n" % e)
+        return 2
+    if opts.max_steps < 1:
+        sys.stderr.write("ERROR: --max-steps must be at least 1\n")
+        return 2
+
+    cp = K.compile_program(prog)
+    res = K.execute(cp, inp.args, inp.segments, inp.vin, opts.max_steps, want_trace=True)
+    cycles = None
+    issue = []
+    if res.status != 'TIMEOUT':
+        cycles = K.time_trace(cp, res.trace, mc, issue)
+
+    print("program: %s" % prog.name)
+    print("machine: %s" % os.path.basename(machine_path))
+    print("input: %s" % (input_path if input_path else "none (all parameters are 0, memory is empty)"))
+    if res.status == 'RET':
+        print("status: RET")
+        print("ret: %d" % res.value)
+    elif res.status == 'TRAP':
+        print("status: TRAP %s" % res.value)
+        print("ret: -")
+    else:
+        print("status: TIMEOUT")
+        print("ret: -")
+    print("vlog_entries: %d" % len(res.vlog))
+    print("vlog_hash: %s" % K.vlog_hash(res.vlog))
+    print("mem_hash: %s" % K.data_region_hash(res.mem))
+    print("steps: %d" % res.steps)
+    print("cycles: %s" % (cycles if cycles is not None else '-'))
+    if opts.verbose:
+        for i, e in enumerate(res.vlog):
+            print("vlog[%d]: %s" % (i, K._fmt_v(e)))
+        for a in range(K.SCRATCH_BASE):
+            if res.mem[a]:
+                print("mem[%d] = %d" % (a, res.mem[a]))
+    if opts.trace is not None and res.status != 'TIMEOUT':
+        print("trace (step, instruction index, block, instruction, issue cycle):")
+        for i in range(min(opts.trace, len(res.trace))):
+            pc = res.trace[i]
+            print("  %5d  #%-4d %-14s %-34s cycle %d" % (i, pc, cp.block_of[pc], cp.text[pc], issue[i]))
+    return 3 if res.status == 'TIMEOUT' else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

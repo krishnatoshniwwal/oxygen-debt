@@ -1,0 +1,30 @@
+; name: guarded_div
+; category: effects
+; description: division that only happens when the divisor is non-zero
+; sample input: guarded_div.in
+
+func guarded_div(v0, v1)
+entry:
+  const v2, 0
+  const v3, 0
+  jmp for_head1
+for_head1:
+  lt v4, v3, 8
+  br v4, for_body2, for_exit3
+for_body2:
+  eq v6, v1, 0
+  eq v5, v6, 0
+  br v5, then4, endif5
+then4:
+  div v7, v0, v1
+  add v8, v2, v7
+  mov v2, v8
+  jmp endif5
+endif5:
+  add v9, v2, v3
+  mov v2, v9
+  add v10, v3, 1
+  mov v3, v10
+  jmp for_head1
+for_exit3:
+  ret v2

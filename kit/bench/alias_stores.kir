@@ -1,0 +1,38 @@
+; name: alias_stores
+; category: junk
+; description: a store may land on an address that is loaded again right after (when i*5 and i agree modulo 64)
+; sample input: alias_stores.in
+
+func alias_stores(v0)
+entry:
+  const v1, 63
+  and v2, v0, v1
+  mov v0, v2
+  const v3, 0
+  const v4, 0
+  jmp for_head1
+for_head1:
+  lt v5, v4, v0
+  br v5, for_body2, for_exit3
+for_body2:
+  load v6, v4
+  const v7, 1
+  add v8, v6, v7
+  const v9, 5
+  mul v10, v4, v9
+  const v11, 63
+  and v12, v10, v11
+  store v12, v8
+  load v13, v4
+  add v14, v3, v13
+  const v15, 1
+  add v16, v4, v15
+  load v17, v16
+  add v18, v14, v17
+  mov v3, v18
+  const v19, 1
+  add v20, v4, v19
+  mov v4, v20
+  jmp for_head1
+for_exit3:
+  ret v3

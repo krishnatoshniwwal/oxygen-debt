@@ -1,0 +1,39 @@
+; name: row_sums
+; category: arrays
+; description: row sums of an 8-wide matrix written to addresses 100..
+; sample input: row_sums.in
+
+func row_sums(v0)
+entry:
+  and v2, v0, 7
+  add v3, v2, 1
+  mov v1, v3
+  const v4, 0
+  jmp for_head1
+for_head1:
+  lt v5, v4, v1
+  br v5, for_body2, for_exit3
+for_body2:
+  const v6, 0
+  const v7, 0
+  jmp for_head4
+for_head4:
+  lt v8, v7, 8
+  br v8, for_body5, for_exit6
+for_body5:
+  mul v9, v4, 8
+  add v10, v9, v7
+  load v11, v10
+  add v12, v6, v11
+  mov v6, v12
+  add v13, v7, 1
+  mov v7, v13
+  jmp for_head4
+for_exit6:
+  add v14, 100, v4
+  store v14, v6
+  add v15, v4, 1
+  mov v4, v15
+  jmp for_head1
+for_exit3:
+  ret v1

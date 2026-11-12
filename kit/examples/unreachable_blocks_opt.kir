@@ -1,0 +1,6 @@
+; optimized version of bench/unreachable_blocks.kir (written by a prototype optimizer)
+func unreachable_blocks(v0)
+entry:
+  mul v0, v0, 3
+  add v0, v0, 7
+  ret v0

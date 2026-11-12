@@ -1,0 +1,30 @@
+; name: xorshift
+; category: bits
+; description: xorshift32 generator iterated n times
+; sample input: xorshift.in
+
+func xorshift(v0, v1)
+entry:
+  and v2, v0, 63
+  mov v0, v2
+  mov v3, v1
+  const v4, 0
+  jmp for_head1
+for_head1:
+  lt v5, v4, v0
+  br v5, for_body2, for_exit3
+for_body2:
+  shl v6, v3, 13
+  xor v7, v3, v6
+  mov v3, v7
+  shr v8, v3, 17
+  xor v9, v3, v8
+  mov v3, v9
+  shl v10, v3, 5
+  xor v11, v3, v10
+  mov v3, v11
+  add v12, v4, 1
+  mov v4, v12
+  jmp for_head1
+for_exit3:
+  ret v3

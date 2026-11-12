@@ -1,0 +1,33 @@
+; name: binary_search
+; category: arrays
+; description: lower-bound binary search in a sorted array
+; sample input: binary_search.in
+
+func binary_search(v0, v1)
+entry:
+  and v2, v0, 63
+  mov v0, v2
+  const v3, 0
+  mov v4, v0
+  jmp while_head1
+while_head1:
+  lt v5, v3, v4
+  br v5, while_body2, while_exit3
+while_body2:
+  add v7, v3, v4
+  shr v8, v7, 1
+  mov v6, v8
+  load v9, v6
+  lt v10, v9, v1
+  br v10, then4, else6
+then4:
+  add v11, v6, 1
+  mov v3, v11
+  jmp endif5
+else6:
+  mov v4, v6
+  jmp endif5
+endif5:
+  jmp while_head1
+while_exit3:
+  ret v3

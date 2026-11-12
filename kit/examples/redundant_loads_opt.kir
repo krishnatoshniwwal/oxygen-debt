@@ -1,0 +1,19 @@
+; optimized version of bench/redundant_loads.kir (written by a prototype optimizer)
+func redundant_loads(v4)
+entry:
+  and v4, v4, 63
+  const v3, 0
+  const v2, 0
+  jmp for_head1
+for_head1:
+  lt v0, v2, v4
+  br v0, for_body2, for_exit3
+for_body2:
+  load v1, v2
+  add v0, v3, v1
+  mac v0, v1, v1, v0
+  add v3, v0, v1
+  add v2, v2, 1
+  jmp for_head1
+for_exit3:
+  ret v3

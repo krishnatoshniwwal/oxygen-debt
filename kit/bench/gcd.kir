@@ -1,0 +1,28 @@
+; name: gcd
+; category: loops
+; description: Euclid gcd with div/mod
+; sample input: gcd.in
+
+func gcd(v0, v1)
+entry:
+  const v2, 32767
+  and v3, v0, v2
+  mov v0, v3
+  const v4, 32767
+  and v5, v1, v4
+  mov v1, v5
+  jmp while_head1
+while_head1:
+  const v6, 0
+  eq v8, v1, v6
+  const v9, 0
+  eq v7, v8, v9
+  br v7, while_body2, while_exit3
+while_body2:
+  mod v11, v0, v1
+  mov v10, v11
+  mov v0, v1
+  mov v1, v10
+  jmp while_head1
+while_exit3:
+  ret v0

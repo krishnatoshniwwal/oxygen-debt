@@ -1,0 +1,46 @@
+; name: powmod
+; category: numbers
+; description: modular exponentiation, modulus 46337
+; sample input: powmod.in
+
+func powmod(v0, v1)
+entry:
+  const v2, 65535
+  and v3, v0, v2
+  const v4, 46337
+  mod v5, v3, v4
+  mov v0, v5
+  const v6, 63
+  and v7, v1, v6
+  mov v1, v7
+  const v8, 1
+  const v9, 0
+  jmp for_head1
+for_head1:
+  const v10, 6
+  lt v11, v9, v10
+  br v11, for_body2, for_exit3
+for_body2:
+  shr v12, v1, v9
+  const v13, 1
+  and v14, v12, v13
+  const v15, 1
+  eq v16, v14, v15
+  br v16, then4, endif5
+then4:
+  mul v17, v8, v0
+  const v18, 46337
+  mod v19, v17, v18
+  mov v8, v19
+  jmp endif5
+endif5:
+  mul v20, v0, v0
+  const v21, 46337
+  mod v22, v20, v21
+  mov v0, v22
+  const v23, 1
+  add v24, v9, v23
+  mov v9, v24
+  jmp for_head1
+for_exit3:
+  ret v8

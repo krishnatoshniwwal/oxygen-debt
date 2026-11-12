@@ -1,0 +1,8 @@
+# branch profile for count_above: edge FROM TO COUNT (CFG edges taken in a typical run)
+edge entry for_head1 1
+edge for_head1 for_body2 16
+edge for_body2 endif5 7
+edge endif5 for_head1 16
+edge for_body2 then4 9
+edge then4 endif5 9
+edge for_head1 for_exit3 1

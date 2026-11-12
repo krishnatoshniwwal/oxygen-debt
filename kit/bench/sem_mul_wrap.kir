@@ -1,0 +1,20 @@
+; name: sem_mul_wrap
+; category: semantics
+; description: multiplication that wraps around 32 bits, then a division by 16
+; sample input: sem_mul_wrap.in
+
+func sem_mul_wrap(v0, v1)
+entry:
+  mul v3, v0, v1
+  mov v2, v3
+  mul v5, v2, v2
+  mov v4, v5
+  mul v7, v4, v0
+  mov v6, v7
+  const v8, 3
+  shr v9, v2, v8
+  add v10, v6, v9
+  const v11, 16
+  div v12, v4, v11
+  add v13, v10, v12
+  ret v13

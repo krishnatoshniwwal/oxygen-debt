@@ -1,0 +1,20 @@
+; optimized version of bench/sensor_sum.kir (written by a prototype optimizer)
+func sensor_sum(v4)
+entry:
+  and v4, v4, 15
+  const v3, 0
+  const v2, 0
+  jmp for_head1
+for_head1:
+  lt v0, v2, v4
+  br v0, for_body2, for_exit3
+for_body2:
+  vload v1, 1
+  vload v0, 1
+  add v0, v3, v1
+  mov v3, v0
+  vstore 2, v0
+  add v2, v2, 1
+  jmp for_head1
+for_exit3:
+  ret v3

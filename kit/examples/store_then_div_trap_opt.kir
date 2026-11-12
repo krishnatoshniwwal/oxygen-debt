@@ -1,0 +1,8 @@
+; optimized version of bench/store_then_div_trap.kir (written by a prototype optimizer)
+func store_then_div_trap(v1, v0)
+entry:
+  store 300, v1
+  store 301, v0
+  div v0, v1, v0
+  store 302, v0
+  ret v0

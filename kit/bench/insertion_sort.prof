@@ -1,0 +1,13 @@
+# branch profile for insertion_sort: edge FROM TO COUNT (CFG edges taken in a typical run)
+edge entry for_head1 1
+edge for_head1 for_body2 11
+edge for_body2 while_head4 11
+edge while_head4 while_body5 37
+edge while_body5 then7 28
+edge then7 endif8 28
+edge endif8 while_head4 28
+edge while_head4 while_exit6 2
+edge while_exit6 for_head1 11
+edge while_body5 else9 9
+edge else9 while_exit6 9
+edge for_head1 for_exit3 1

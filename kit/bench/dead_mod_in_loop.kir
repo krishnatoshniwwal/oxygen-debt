@@ -1,0 +1,25 @@
+; name: dead_mod_in_loop
+; category: effects
+; description: an unused remainder inside a loop: it must still trap when d is 0
+; sample input: dead_mod_in_loop.in
+
+func dead_mod_in_loop(v0, v1)
+entry:
+  and v2, v0, 15
+  mov v0, v2
+  const v3, 0
+  const v4, 0
+  jmp for_head1
+for_head1:
+  lt v5, v4, v0
+  br v5, for_body2, for_exit3
+for_body2:
+  mod v7, v4, v1
+  mov v6, v7
+  add v8, v3, v4
+  mov v3, v8
+  add v9, v4, 1
+  mov v4, v9
+  jmp for_head1
+for_exit3:
+  ret v3

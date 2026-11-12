@@ -1,0 +1,58 @@
+; name: mini_interp
+; category: state
+; description: tiny bytecode interpreter: (op, arg) pairs in memory
+; sample input: mini_interp.in
+
+func mini_interp(v0)
+entry:
+  and v1, v0, 31
+  mov v0, v1
+  const v2, 1
+  const v3, 0
+  jmp for_head1
+for_head1:
+  lt v4, v3, v0
+  br v4, for_body2, for_exit3
+for_body2:
+  mul v6, 2, v3
+  load v7, v6
+  and v8, v7, 3
+  mov v5, v8
+  mul v10, 2, v3
+  add v11, v10, 1
+  load v12, v11
+  mov v9, v12
+  eq v13, v5, 0
+  br v13, then4, else6
+then4:
+  add v14, v2, v9
+  mov v2, v14
+  jmp endif5
+else6:
+  eq v15, v5, 1
+  br v15, then7, else9
+then7:
+  xor v16, v2, v9
+  mov v2, v16
+  jmp endif8
+else9:
+  eq v17, v5, 2
+  br v17, then10, else12
+then10:
+  shl v18, v2, 1
+  mov v2, v18
+  jmp endif11
+else12:
+  sub v19, v2, v9
+  mov v2, v19
+  jmp endif11
+endif11:
+  jmp endif8
+endif8:
+  jmp endif5
+endif5:
+  add v20, v3, 1
+  mov v3, v20
+  jmp for_head1
+for_exit3:
+  ret v2

@@ -1,0 +1,19 @@
+; optimized version of bench/addsh_index.kir (written by a prototype optimizer)
+func addsh_index(v3)
+entry:
+  and v3, v3, 31
+  const v2, 0
+  jmp for_head1
+for_head1:
+  lt v0, v2, v3
+  br v0, for_body2, for_exit3
+for_body2:
+  shl v0, v2, 2
+  load v0, v0
+  addsh v1, v0, v2, 3
+  add v0, v2, 200
+  store v0, v1
+  add v2, v2, 1
+  jmp for_head1
+for_exit3:
+  ret v3

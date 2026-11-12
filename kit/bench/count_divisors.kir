@@ -1,0 +1,37 @@
+; name: count_divisors
+; category: loops
+; description: number of divisors; the loop bound n+1 is recomputed every time
+; sample input: count_divisors.in
+
+func count_divisors(v0)
+entry:
+  const v1, 255
+  and v2, v0, v1
+  const v3, 1
+  add v4, v2, v3
+  mov v0, v4
+  const v5, 0
+  const v6, 1
+  jmp for_head1
+for_head1:
+  const v7, 1
+  add v8, v0, v7
+  lt v9, v6, v8
+  br v9, for_body2, for_exit3
+for_body2:
+  mod v10, v0, v6
+  const v11, 0
+  eq v12, v10, v11
+  br v12, then4, endif5
+then4:
+  const v13, 1
+  add v14, v5, v13
+  mov v5, v14
+  jmp endif5
+endif5:
+  const v15, 1
+  add v16, v6, v15
+  mov v6, v16
+  jmp for_head1
+for_exit3:
+  ret v5

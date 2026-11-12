@@ -1,0 +1,24 @@
+; name: irreducible_loop
+; category: control
+; description: a loop that can be entered at two different blocks (irreducible control flow)
+; sample input: irreducible_loop.in
+
+func irreducible_loop(v0)
+entry:
+  and v1, v0, 15
+  const v2, 0
+  const v3, 0
+  lt v4, v1, 8
+  br v4, a, b
+a:
+  add v2, v2, 3
+  add v3, v3, 1
+  lt v5, v3, 20
+  br v5, b, done
+b:
+  add v2, v2, 5
+  add v3, v3, 1
+  lt v5, v3, 20
+  br v5, a, done
+done:
+  ret v2

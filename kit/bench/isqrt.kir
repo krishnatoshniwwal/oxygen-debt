@@ -1,0 +1,35 @@
+; name: isqrt
+; category: loops
+; description: integer square root by binary search
+; sample input: isqrt.in
+
+func isqrt(v0)
+entry:
+  and v1, v0, 0xFFFFFF
+  mov v0, v1
+  const v2, 0
+  const v3, 4096
+  jmp while_head1
+while_head1:
+  lt v4, v2, v3
+  br v4, while_body2, while_exit3
+while_body2:
+  add v6, v2, v3
+  add v7, v6, 1
+  shr v8, v7, 1
+  mov v5, v8
+  mul v9, v5, v5
+  lt v11, v0, v9
+  eq v10, v11, 0
+  br v10, then4, else6
+then4:
+  mov v2, v5
+  jmp endif5
+else6:
+  sub v12, v5, 1
+  mov v3, v12
+  jmp endif5
+endif5:
+  jmp while_head1
+while_exit3:
+  ret v2

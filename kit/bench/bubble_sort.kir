@@ -1,0 +1,47 @@
+; name: bubble_sort
+; category: arrays
+; description: bubble sort (signed)
+; sample input: bubble_sort.in
+
+func bubble_sort(v0)
+entry:
+  and v1, v0, 15
+  mov v0, v1
+  const v2, 0
+  jmp for_head1
+for_head1:
+  lt v3, v2, v0
+  br v3, for_body2, for_exit3
+for_body2:
+  const v4, 0
+  jmp for_head4
+for_head4:
+  sub v5, v0, 1
+  sub v6, v5, v2
+  lt v7, v4, v6
+  br v7, for_body5, for_exit6
+for_body5:
+  load v8, v4
+  add v9, v4, 1
+  load v10, v9
+  lt v11, v10, v8
+  br v11, then7, endif8
+then7:
+  load v13, v4
+  mov v12, v13
+  add v14, v4, 1
+  load v15, v14
+  store v4, v15
+  add v16, v4, 1
+  store v16, v12
+  jmp endif8
+endif8:
+  add v17, v4, 1
+  mov v4, v17
+  jmp for_head4
+for_exit6:
+  add v18, v2, 1
+  mov v2, v18
+  jmp for_head1
+for_exit3:
+  ret v0

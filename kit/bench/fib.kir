@@ -1,0 +1,28 @@
+; name: fib
+; category: loops
+; description: iterative Fibonacci (wraps at 32 bits)
+; sample input: fib.in
+
+func fib(v0)
+entry:
+  const v1, 63
+  and v2, v0, v1
+  mov v0, v2
+  const v3, 0
+  const v4, 1
+  const v5, 0
+  jmp for_head1
+for_head1:
+  lt v6, v5, v0
+  br v6, for_body2, for_exit3
+for_body2:
+  add v8, v3, v4
+  mov v7, v8
+  mov v3, v4
+  mov v4, v7
+  const v9, 1
+  add v10, v5, v9
+  mov v5, v10
+  jmp for_head1
+for_exit3:
+  ret v3

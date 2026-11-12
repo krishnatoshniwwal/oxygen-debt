@@ -1,0 +1,12 @@
+# branch profile for sieve: edge FROM TO COUNT (CFG edges taken in a typical run)
+edge entry for_head1 1
+edge for_head1 for_body2 100
+edge for_body2 then4 26
+edge then4 while_head6 26
+edge while_head6 while_body7 146
+edge while_body7 while_head6 146
+edge while_head6 while_exit8 26
+edge while_exit8 endif5 26
+edge endif5 for_head1 100
+edge for_body2 endif5 74
+edge for_head1 for_exit3 1

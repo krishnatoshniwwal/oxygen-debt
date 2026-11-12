@@ -1,0 +1,18 @@
+; A WRONG "optimization" of bench/sum_sq.kir.
+; It looks fast, but the loop bound was changed from n to 20, so the answer is wrong for most inputs.
+; kvalidate --against bench/sum_sq.kir must reject it.
+func sum_sq(v0)
+entry:
+  and v0, v0, 63
+  const v1, 0
+  const v2, 0
+  jmp head
+head:
+  lt v3, v2, 20
+  br v3, body, done
+body:
+  mac v1, v2, v2, v1
+  add v2, v2, 1
+  jmp head
+done:
+  ret v1

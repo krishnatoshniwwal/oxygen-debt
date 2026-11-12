@@ -1,0 +1,9 @@
+# branch profile for binary_search: edge FROM TO COUNT (CFG edges taken in a typical run)
+edge entry while_head1 1
+edge while_head1 while_body2 3
+edge while_body2 else6 1
+edge else6 endif5 1
+edge endif5 while_head1 3
+edge while_body2 then4 2
+edge then4 endif5 2
+edge while_head1 while_exit3 1

@@ -1,0 +1,23 @@
+; name: popcount
+; category: loops
+; description: population count by shifting 32 times
+; sample input: popcount.in
+
+func popcount(v0)
+entry:
+  const v1, 0
+  const v2, 0
+  jmp for_head1
+for_head1:
+  lt v3, v2, 32
+  br v3, for_body2, for_exit3
+for_body2:
+  shr v4, v0, v2
+  and v5, v4, 1
+  add v6, v1, v5
+  mov v1, v6
+  add v7, v2, 1
+  mov v2, v7
+  jmp for_head1
+for_exit3:
+  ret v1

@@ -1,0 +1,15 @@
+; name: checked_add_trap
+; category: effects
+; description: addition with an overflow check that traps
+; sample input: checked_add_trap.in
+
+func checked_add_trap(v0, v1)
+entry:
+  add v3, v0, v1
+  mov v2, v3
+  lt v4, v2, v0
+  br v4, then1, endif2
+then1:
+  trap 9
+endif2:
+  ret v2

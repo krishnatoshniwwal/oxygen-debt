@@ -1,0 +1,25 @@
+; name: factorial_mod
+; category: loops
+; description: factorial modulo 1000003
+; sample input: factorial_mod.in
+
+func factorial_mod(v0)
+entry:
+  and v1, v0, 31
+  mov v0, v1
+  const v2, 1
+  const v3, 1
+  jmp for_head1
+for_head1:
+  add v4, v0, 1
+  lt v5, v3, v4
+  br v5, for_body2, for_exit3
+for_body2:
+  mul v6, v2, v3
+  mod v7, v6, 0xF4243
+  mov v2, v7
+  add v8, v3, 1
+  mov v3, v8
+  jmp for_head1
+for_exit3:
+  ret v2

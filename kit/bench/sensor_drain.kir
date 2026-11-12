@@ -1,0 +1,27 @@
+; name: sensor_drain
+; category: effects
+; description: a sensor is read twice per round but only the first reading is used
+; sample input: sensor_drain.in
+
+func sensor_drain(v0)
+entry:
+  and v1, v0, 15
+  mov v0, v1
+  const v2, 0
+  const v3, 0
+  jmp for_head1
+for_head1:
+  lt v4, v3, v0
+  br v4, for_body2, for_exit3
+for_body2:
+  vload v6, 5
+  mov v5, v6
+  vload v8, 5
+  mov v7, v8
+  add v9, v2, v5
+  mov v2, v9
+  add v10, v3, 1
+  mov v3, v10
+  jmp for_head1
+for_exit3:
+  ret v2

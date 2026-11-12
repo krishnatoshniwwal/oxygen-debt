@@ -1,0 +1,36 @@
+; name: is_prime
+; category: numbers
+; description: primality test by trial division
+; sample input: is_prime.in
+
+func is_prime(v0)
+entry:
+  const v1, 1023
+  and v2, v0, v1
+  const v3, 2
+  add v4, v2, v3
+  mov v0, v4
+  const v5, 2
+  jmp while_head1
+while_head1:
+  mul v6, v5, v5
+  lt v8, v0, v6
+  const v9, 0
+  eq v7, v8, v9
+  br v7, while_body2, while_exit3
+while_body2:
+  mod v10, v0, v5
+  const v11, 0
+  eq v12, v10, v11
+  br v12, then4, endif5
+then4:
+  const v13, 0
+  ret v13
+endif5:
+  const v14, 1
+  add v15, v5, v14
+  mov v5, v15
+  jmp while_head1
+while_exit3:
+  const v16, 1
+  ret v16

@@ -1,0 +1,16 @@
+; name: store_then_div_trap
+; category: effects
+; description: three stores, then a division that may trap: the stores must be visible
+; sample input: store_then_div_trap.in
+
+func store_then_div_trap(v0, v1)
+entry:
+  const v2, 300
+  store v2, v0
+  const v3, 301
+  store v3, v1
+  div v5, v0, v1
+  mov v4, v5
+  const v6, 302
+  store v6, v4
+  ret v4

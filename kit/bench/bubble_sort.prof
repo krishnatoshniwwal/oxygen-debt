@@ -1,0 +1,12 @@
+# branch profile for bubble_sort: edge FROM TO COUNT (CFG edges taken in a typical run)
+edge entry for_head1 1
+edge for_head1 for_body2 10
+edge for_body2 for_head4 10
+edge for_head4 for_body5 45
+edge for_body5 then7 23
+edge then7 endif8 23
+edge endif8 for_head4 45
+edge for_body5 endif8 22
+edge for_head4 for_exit6 10
+edge for_exit6 for_head1 10
+edge for_head1 for_exit3 1

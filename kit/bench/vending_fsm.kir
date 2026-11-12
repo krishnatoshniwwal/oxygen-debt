@@ -1,0 +1,114 @@
+; name: vending_fsm
+; category: state
+; description: vending machine automaton with nested if/elif on state and event
+; sample input: vending_fsm.in
+
+func vending_fsm(v0)
+entry:
+  and v1, v0, 31
+  mov v0, v1
+  const v2, 0
+  const v3, 0
+  const v4, 0
+  const v5, 0
+  jmp for_head1
+for_head1:
+  lt v6, v5, v0
+  br v6, for_body2, for_exit3
+for_body2:
+  load v8, v5
+  and v9, v8, 3
+  mov v7, v9
+  eq v10, v2, 0
+  br v10, then4, else6
+then4:
+  eq v11, v7, 0
+  br v11, then7, else9
+then7:
+  const v2, 1
+  jmp endif8
+else9:
+  eq v12, v7, 1
+  br v12, then10, endif11
+then10:
+  const v2, 2
+  jmp endif11
+endif11:
+  jmp endif8
+endif8:
+  jmp endif5
+else6:
+  eq v13, v2, 1
+  br v13, then12, else14
+then12:
+  eq v14, v7, 0
+  br v14, then15, else17
+then15:
+  const v2, 2
+  jmp endif16
+else17:
+  eq v15, v7, 1
+  br v15, then18, else20
+then18:
+  const v2, 3
+  jmp endif19
+else20:
+  eq v16, v7, 2
+  br v16, then21, endif22
+then21:
+  const v2, 0
+  jmp endif22
+endif22:
+  jmp endif19
+endif19:
+  jmp endif16
+endif16:
+  jmp endif13
+else14:
+  eq v17, v2, 2
+  br v17, then23, else25
+then23:
+  eq v18, v7, 0
+  br v18, then26, else28
+then26:
+  const v2, 3
+  jmp endif27
+else28:
+  eq v19, v7, 1
+  br v19, then29, else31
+then29:
+  const v2, 3
+  add v20, v4, 1
+  mov v4, v20
+  jmp endif30
+else31:
+  eq v21, v7, 2
+  br v21, then32, endif33
+then32:
+  const v2, 0
+  add v22, v4, 2
+  mov v4, v22
+  jmp endif33
+endif33:
+  jmp endif30
+endif30:
+  jmp endif27
+endif27:
+  jmp endif24
+else25:
+  add v23, v3, 1
+  mov v3, v23
+  const v2, 0
+  jmp endif24
+endif24:
+  jmp endif13
+endif13:
+  jmp endif5
+endif5:
+  add v24, v5, 1
+  mov v5, v24
+  jmp for_head1
+for_exit3:
+  mul v25, v3, 100
+  add v26, v25, v4
+  ret v26

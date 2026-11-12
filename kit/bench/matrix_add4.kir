@@ -1,0 +1,54 @@
+; name: matrix_add4
+; category: arrays
+; description: add two 4x4 matrices (at 0 and 16) into addresses 32..
+; sample input: matrix_add4.in
+
+func matrix_add4()
+entry:
+  const v0, 0
+  jmp for_head1
+for_head1:
+  const v1, 4
+  lt v2, v0, v1
+  br v2, for_body2, for_exit3
+for_body2:
+  const v3, 0
+  jmp for_head4
+for_head4:
+  const v4, 4
+  lt v5, v3, v4
+  br v5, for_body5, for_exit6
+for_body5:
+  const v6, 4
+  mul v7, v0, v6
+  add v8, v7, v3
+  load v9, v8
+  const v10, 16
+  const v11, 4
+  mul v12, v0, v11
+  add v13, v10, v12
+  add v14, v13, v3
+  load v15, v14
+  add v16, v9, v15
+  const v17, 32
+  const v18, 4
+  mul v19, v0, v18
+  add v20, v17, v19
+  add v21, v20, v3
+  store v21, v16
+  const v22, 1
+  add v23, v3, v22
+  mov v3, v23
+  jmp for_head4
+for_exit6:
+  const v24, 1
+  add v25, v0, v24
+  mov v0, v25
+  jmp for_head1
+for_exit3:
+  const v26, 32
+  load v27, v26
+  const v28, 47
+  load v29, v28
+  add v30, v27, v29
+  ret v30

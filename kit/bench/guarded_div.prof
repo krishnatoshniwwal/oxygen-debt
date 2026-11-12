@@ -1,0 +1,7 @@
+# branch profile for guarded_div: edge FROM TO COUNT (CFG edges taken in a typical run)
+edge entry for_head1 1
+edge for_head1 for_body2 8
+edge for_body2 then4 8
+edge then4 endif5 8
+edge endif5 for_head1 8
+edge for_head1 for_exit3 1

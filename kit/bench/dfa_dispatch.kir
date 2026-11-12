@@ -1,0 +1,95 @@
+; name: dfa_dispatch
+; category: state
+; description: four-state automaton driven by if/elif dispatch
+; sample input: dfa_dispatch.in
+
+func dfa_dispatch(v0)
+entry:
+  and v1, v0, 63
+  mov v0, v1
+  const v2, 0
+  const v3, 0
+  const v4, 0
+  jmp for_head1
+for_head1:
+  lt v5, v4, v0
+  br v5, for_body2, for_exit3
+for_body2:
+  load v7, v4
+  and v8, v7, 3
+  mov v6, v8
+  eq v9, v2, 0
+  br v9, then4, else6
+then4:
+  eq v10, v6, 0
+  br v10, then7, endif8
+then7:
+  const v2, 1
+  jmp endif8
+endif8:
+  jmp endif5
+else6:
+  eq v11, v2, 1
+  br v11, then9, else11
+then9:
+  eq v12, v6, 1
+  br v12, then12, else14
+then12:
+  const v2, 2
+  jmp endif13
+else14:
+  eq v14, v6, 0
+  eq v13, v14, 0
+  br v13, then15, endif16
+then15:
+  const v2, 0
+  jmp endif16
+endif16:
+  jmp endif13
+endif13:
+  jmp endif10
+else11:
+  eq v15, v2, 2
+  br v15, then17, else19
+then17:
+  eq v16, v6, 1
+  br v16, then20, else22
+then20:
+  const v2, 3
+  jmp endif21
+else22:
+  eq v17, v6, 0
+  br v17, then23, else25
+then23:
+  const v2, 1
+  jmp endif24
+else25:
+  const v2, 0
+  jmp endif24
+endif24:
+  jmp endif21
+endif21:
+  jmp endif18
+else19:
+  add v18, v3, 1
+  mov v3, v18
+  eq v19, v6, 0
+  br v19, then26, else28
+then26:
+  const v2, 1
+  jmp endif27
+else28:
+  const v2, 0
+  jmp endif27
+endif27:
+  jmp endif18
+endif18:
+  jmp endif10
+endif10:
+  jmp endif5
+endif5:
+  add v20, v4, 1
+  mov v4, v20
+  jmp for_head1
+for_exit3:
+  ret v3

@@ -1,0 +1,22 @@
+; hand-written optimized version of bench/strength_ladder.kir
+func strength_ladder(v0)
+entry:
+  and v0, v0, 63
+  const v1, 0          ; s, the running sum
+  const v2, 0          ; i, the loop counter
+  const v3, 0          ; p, always equal to i * 37 (kept up to date by adding 37)
+  jmp head
+head:
+  lt v4, v2, v0
+  br v4, body, done
+body:
+  shr v5, v2, 2        ; i // 4 is the same as i >> 2, because i is never negative here
+  and v6, v2, 7        ; i % 8 is the same as i & 7, for the same reason
+  add v1, v1, v3
+  add v1, v1, v5
+  add v1, v1, v6
+  add v2, v2, 1
+  add v3, v3, 37       ; 8 + 10 + 3 + 16 = 37, so all four multiplications become one running value
+  jmp head
+done:
+  ret v1

@@ -1,0 +1,42 @@
+; name: const_chain
+; category: junk
+; description: identity operations and constant arithmetic around x
+; sample input: const_chain.in
+
+func const_chain(v0)
+entry:
+  const v2, 5
+  add v3, v0, v2
+  mov v1, v3
+  const v5, 5
+  sub v6, v1, v5
+  mov v4, v6
+  const v8, 1
+  mul v9, v4, v8
+  mov v7, v9
+  const v11, 0
+  add v12, v7, v11
+  mov v10, v12
+  const v14, 8
+  mul v15, v10, v14
+  mov v13, v15
+  const v17, 3
+  shl v18, v10, v17
+  mov v16, v18
+  sub v20, v13, v16
+  mov v19, v20
+  const v22, 0
+  xor v23, v10, v22
+  const v24, 0
+  or v25, v23, v24
+  mov v21, v25
+  const v27, 0xFFFFFFFF
+  and v28, v21, v27
+  mov v26, v28
+  add v29, v26, v19
+  const v30, 0
+  mul v31, v0, v30
+  add v32, v29, v31
+  xor v33, v0, v0
+  add v34, v32, v33
+  ret v34

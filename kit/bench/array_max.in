@@ -1,0 +1,3 @@
+# sample input for array_max
+args 11
+mem 0 4 17 3 99 42 8 15 23 16 5 61 7

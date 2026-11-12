@@ -1,0 +1,26 @@
+; hand-written optimized version of bench/popcount.kir
+func popcount(v0)
+entry:
+  const v1, 0          ; count
+  const v2, 0          ; i
+  jmp head
+head:
+  lt v3, v2, 32
+  br v3, body, done
+body:
+  and v4, v0, 1        ; four bit tests per round instead of one (the loop is unrolled 4 times)
+  shr v0, v0, 1
+  and v5, v0, 1
+  shr v0, v0, 1
+  and v6, v0, 1
+  shr v0, v0, 1
+  and v7, v0, 1
+  shr v0, v0, 1
+  add v4, v4, v5
+  add v6, v6, v7
+  add v4, v4, v6
+  add v1, v1, v4
+  add v2, v2, 4
+  jmp head
+done:
+  ret v1

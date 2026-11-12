@@ -1,0 +1,11 @@
+; name: div_trap
+; category: effects
+; description: division and remainder on raw arguments: traps when d is 0
+; sample input: div_trap.in
+
+func div_trap(v0, v1)
+entry:
+  div v2, v0, v1
+  mod v3, v0, v1
+  add v4, v2, v3
+  ret v4

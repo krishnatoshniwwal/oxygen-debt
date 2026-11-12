@@ -1,0 +1,28 @@
+; name: common_subexpr
+; category: junk
+; description: one big subexpression written out three times
+; sample input: common_subexpr.in
+
+func common_subexpr(v0, v1, v2)
+entry:
+  mul v4, v0, v1
+  add v5, v4, v2
+  mul v6, v0, v1
+  add v7, v6, v2
+  mul v8, v5, v7
+  mul v9, v0, v1
+  add v10, v9, v2
+  add v11, v8, v10
+  mov v3, v11
+  mul v13, v0, v1
+  add v14, v13, v2
+  mul v15, v0, v1
+  add v16, v15, v2
+  const v17, 2
+  mul v18, v16, v17
+  sub v19, v14, v18
+  mov v12, v19
+  add v20, v3, v12
+  mul v21, v0, v1
+  add v22, v20, v21
+  ret v22

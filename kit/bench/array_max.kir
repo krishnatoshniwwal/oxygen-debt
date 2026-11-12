@@ -1,0 +1,31 @@
+; name: array_max
+; category: arrays
+; description: maximum of an array (signed compare)
+; sample input: array_max.in
+
+func array_max(v0)
+entry:
+  and v1, v0, 63
+  add v2, v1, 1
+  mov v0, v2
+  load v4, 0
+  mov v3, v4
+  const v5, 1
+  jmp for_head1
+for_head1:
+  lt v6, v5, v0
+  br v6, for_body2, for_exit3
+for_body2:
+  load v7, v5
+  lt v8, v3, v7
+  br v8, then4, endif5
+then4:
+  load v9, v5
+  mov v3, v9
+  jmp endif5
+endif5:
+  add v10, v5, 1
+  mov v5, v10
+  jmp for_head1
+for_exit3:
+  ret v3

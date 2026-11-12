@@ -1,0 +1,129 @@
+; name: unrolled_poly
+; category: large
+; description: a 24-term polynomial written out without a loop (more instructions than the cache holds)
+; sample input: unrolled_poly.in
+
+func unrolled_poly(v0)
+entry:
+  const v1, 0
+  mul v2, v1, v0
+  const v3, 0
+  load v4, v3
+  add v5, v2, v4
+  mov v1, v5
+  mul v6, v1, v0
+  const v7, 1
+  load v8, v7
+  add v9, v6, v8
+  mov v1, v9
+  mul v10, v1, v0
+  const v11, 2
+  load v12, v11
+  add v13, v10, v12
+  mov v1, v13
+  mul v14, v1, v0
+  const v15, 3
+  load v16, v15
+  add v17, v14, v16
+  mov v1, v17
+  mul v18, v1, v0
+  const v19, 4
+  load v20, v19
+  add v21, v18, v20
+  mov v1, v21
+  mul v22, v1, v0
+  const v23, 5
+  load v24, v23
+  add v25, v22, v24
+  mov v1, v25
+  mul v26, v1, v0
+  const v27, 6
+  load v28, v27
+  add v29, v26, v28
+  mov v1, v29
+  mul v30, v1, v0
+  const v31, 7
+  load v32, v31
+  add v33, v30, v32
+  mov v1, v33
+  mul v34, v1, v0
+  const v35, 8
+  load v36, v35
+  add v37, v34, v36
+  mov v1, v37
+  mul v38, v1, v0
+  const v39, 9
+  load v40, v39
+  add v41, v38, v40
+  mov v1, v41
+  mul v42, v1, v0
+  const v43, 10
+  load v44, v43
+  add v45, v42, v44
+  mov v1, v45
+  mul v46, v1, v0
+  const v47, 11
+  load v48, v47
+  add v49, v46, v48
+  mov v1, v49
+  mul v50, v1, v0
+  const v51, 12
+  load v52, v51
+  add v53, v50, v52
+  mov v1, v53
+  mul v54, v1, v0
+  const v55, 13
+  load v56, v55
+  add v57, v54, v56
+  mov v1, v57
+  mul v58, v1, v0
+  const v59, 14
+  load v60, v59
+  add v61, v58, v60
+  mov v1, v61
+  mul v62, v1, v0
+  const v63, 15
+  load v64, v63
+  add v65, v62, v64
+  mov v1, v65
+  mul v66, v1, v0
+  const v67, 16
+  load v68, v67
+  add v69, v66, v68
+  mov v1, v69
+  mul v70, v1, v0
+  const v71, 17
+  load v72, v71
+  add v73, v70, v72
+  mov v1, v73
+  mul v74, v1, v0
+  const v75, 18
+  load v76, v75
+  add v77, v74, v76
+  mov v1, v77
+  mul v78, v1, v0
+  const v79, 19
+  load v80, v79
+  add v81, v78, v80
+  mov v1, v81
+  mul v82, v1, v0
+  const v83, 20
+  load v84, v83
+  add v85, v82, v84
+  mov v1, v85
+  mul v86, v1, v0
+  const v87, 21
+  load v88, v87
+  add v89, v86, v88
+  mov v1, v89
+  mul v90, v1, v0
+  const v91, 22
+  load v92, v91
+  add v93, v90, v92
+  mov v1, v93
+  mul v94, v1, v0
+  const v95, 23
+  load v96, v95
+  add v97, v94, v96
+  mov v1, v97
+  ret v1
