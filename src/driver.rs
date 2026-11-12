@@ -2,6 +2,7 @@
 use crate::backend;
 use crate::evalsim::Reference;
 use crate::ir::{self, Func};
+use crate::large;
 use crate::kir::*;
 use crate::passes;
 use crate::passes2;
@@ -155,6 +156,10 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     ssa::build_ssa(&mut f);
     chk(&mut f, "build_ssa");
     prof("build_ssa", &mut t);
+    if large::roll_mode() > 0 && large::pre_roll(&mut f, mc, v.ifc) {
+        chk(&mut f, "reroll");
+        prof("reroll", &mut t);
+    }
     phase_a(&mut f, v, light);
     prof("phase_a total", &mut t);
     if v.peel != 0 {
@@ -242,7 +247,7 @@ fn finish(f: &mut Func, mc: &Machine, profile: Option<&backend::Profile>, maxdup
         backend::unroll(f, factor, budget.max(0));
         backend::final_cleanup(f);
     }
-    backend::layout(f, profile);
+    large::layout(f, mc, profile);
     ir::to_text(f)
 }
 
@@ -371,6 +376,9 @@ impl<'a> Search<'a> {
         }
         match r {
             Ok(Ok((out, Some((cp, size, sc)), _))) => {
+                if self.size > MID {
+                    large::publish(self.rf, &cp, sc, self.rf.base(), &out);
+                }
                 self.seen.insert(out.clone(), sc);
                 self.results.push(Cand { score: sc, size, order: self.n, text: out, cp, desc: format!("{:?} {:?}", v, be) });
                 Some(sc)
@@ -394,6 +402,9 @@ const WORK_BUDGET: usize = 16000; // the search stops when this much work has be
 /// Return the optimized program text. Falls back to the input text on any problem.
 pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<String, String> {
     let prog = parse_program(text)?; // an invalid input is an error
+    if large::too_hostile(&prog) {
+        return Ok(text.to_string());
+    }
     let profile = profile_text.map(backend::parse_profile);
     let size = prog.instrs.len();
     let mut t = prof_start();
@@ -427,7 +438,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     state.1 = s.run(&state.0, b0);
 
     fn consider(s: &mut Search, state: &mut (Variant, Option<f64>), v: Variant) {
-        if s.spent > WORK_BUDGET {
+        if s.spent > WORK_BUDGET || large::soft_expired() {
             return;
         }
         let sc = s.run(&v, BACKENDS[0]);
@@ -455,6 +466,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
         tries.push(Variant { ifc: 0, ..b });
         for v in tries {
+            if large::soft_expired() {
+                break;
+            }
             let sc = s.run(&v, b0);
             if let Some(sc) = sc {
                 if state.1.map_or(true, |x| sc < x - 1e-9) {
@@ -586,6 +600,38 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 s.run(&v, *be);
             }
         }
+    }
+    // Hot/cold layout (large.rs): the best setting again, with the loops moved in front of
+    // run-once code. Needs no new mid-end run (the mids are kept).
+    if size as i64 > mc.icache_size && !large::soft_expired() {
+        large::set_layout(1);
+        let v = state.0;
+        s.run(&v, b0);
+        large::set_layout(0);
+    }
+    // Rerolling of straight-line repetition (large.rs): one more candidate per mode, on the best
+    // setting found. Only programs that do not fit in the instruction cache are worth it.
+    if size as i64 > mc.icache_size + 8 {
+        for mode in [1u8, 2, 3] {
+            if large::soft_expired() {
+                break;
+            }
+            large::set_roll(mode);
+            s.mids.clear();
+            let b = state.0;
+            let mut vs = vec![b, Variant { spill: !b.spill, ..b }, Variant { sched: !b.sched, ..b }, Variant { hot: !b.hot, ..b }, Variant { fwd: !b.fwd, ..b }];
+            vs.dedup();
+            for v in vs {
+                if large::soft_expired() {
+                    break;
+                }
+                s.run(&v, b0);
+                large::set_layout(1);
+                s.run(&v, b0);
+                large::set_layout(0);
+            }
+        }
+        large::set_roll(0);
     }
     let mut order: Vec<usize> = (0..s.results.len()).collect();
     order.sort_by(|&a, &b| {

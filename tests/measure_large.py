@@ -61,7 +61,7 @@ def main():
     print('%-14s %3s %2s %7s %7s %10s %10s %7s %s' % ('prog', 'C', 'Q', 'n_in', 'n_out', 'cyc_in', 'cyc_out', 'secs', 'status'))
     for p in sorted(glob.glob(os.path.join(d, '*.kir'))):
         name = os.path.basename(p)[:-4]
-        if name.startswith('out_') or (only and only not in name):
+        if not os.path.exists(p[:-4] + '.in') or (only and only not in name):
             continue
         orig = K.parse_program(K.read_text(p))
         inp = K.load_input(p[:-4] + '.in', len(orig.params))
