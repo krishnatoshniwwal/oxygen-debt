@@ -7,11 +7,12 @@
 //! not in a deeper loop than the block. The path that does not use the value then no longer
 //! pays for it. Repeated a few times so that chains sink together.
 use crate::ir::*;
+use crate::kir::*;
 
 pub fn sink(f: &mut Func) -> bool {
     let mut any = false;
     for _ in 0..6 {
-        ir::analyze(f);
+        analyze(f);
         let nv = f.nval.max(0) as usize + 1;
         // blocks using each value; u32::MAX marks a phi use
         let mut uses: Vec<Vec<usize>> = vec![Vec::new(); nv];

@@ -16,6 +16,7 @@ use crate::sched2;
 use crate::domain;
 use crate::reassoc;
 use crate::sccp;
+use crate::sink;
 use crate::ssa;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -41,6 +42,7 @@ pub struct Variant {
     pub acc: u8,     // accumulator splitting (loopopt): 0 = off, else at most this many partial chains
     pub sr: bool,    // scalar replacement of loads across iterations (loopopt)
     pub alg: u8,     // loop algebra (algebra.rs), bit 1 = closed forms of polynomial loops
+    pub sink: bool,  // sink pure instructions into the branch arm that uses them
     pub tree: bool,  // tree-height reduction of add/mul/xor/and/or chains
     pub sccp: bool,  // optimistic conditional constant propagation combined with the ranges
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
@@ -48,7 +50,7 @@ pub struct Variant {
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0 }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0 }
     }
 }
 
@@ -264,6 +266,10 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
         }
     }
     prof("unroll, ranges, dce", &mut t);
+    if v.sink {
+        sink::sink(&mut f);
+        chk(&mut f, "sink");
+    }
     if v.tree {
         reassoc::reassoc(&mut f);
         chk(&mut f, "reassoc");
@@ -733,6 +739,8 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, v);
         let v = Variant { tree: !state.0.tree, ..state.0 };
         consider(&mut s, &mut state, v);
+        let v = Variant { sink: !state.0.sink, ..state.0 };
+        consider(&mut s, &mut state, v);
         for be in BACKENDS[1..].iter() {
             if s.spent > WORK_BUDGET {
                 break;
@@ -771,6 +779,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { alg: b.alg ^ 2, ..b });
             nb.push(Variant { sccp: !b.sccp, ..b });
             nb.push(Variant { tree: !b.tree, ..b });
+            nb.push(Variant { sink: !b.sink, ..b });
             for t in [0u8, 1, 2] {
                 nb.push(Variant { thr: t, ..b });
             }
