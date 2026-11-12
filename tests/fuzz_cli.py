@@ -32,7 +32,7 @@ def one(args):
     with open(base + '.cfg', 'w') as fh:
         for k, v in mc.items():
             fh.write('%s = %d\n' % (k, v))
-    p = subprocess.run([os.path.join(ROOT, 'kopt'), base + '.kir', '--machine', base + '.cfg', '-o', base + '.out'],
+    p = subprocess.run([os.environ.get('KOPT_BIN') or os.path.join(ROOT, 'kopt'), base + '.kir', '--machine', base + '.cfg', '-o', base + '.out'],
                        capture_output=True, text=True)
     res = {'it': it, 'base': base, 'problems': []}
     if p.returncode != 0:

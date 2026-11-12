@@ -13,3 +13,12 @@ path = "src/main.rs"
 opt-level = 3
 debug = false
 panic = "unwind"
+
+# Offline test tool (not built by build.sh): cargo build --release --offline --features tools
+[features]
+tools = []
+
+[[bin]]
+name = "kfuzz"
+path = "src/bin/kfuzz/main.rs"
+required-features = ["tools"]
