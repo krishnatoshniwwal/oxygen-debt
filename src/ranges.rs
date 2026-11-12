@@ -82,7 +82,27 @@ impl Ranges {
             r.term[b] = Some((t.op, t.a.first().copied().unwrap_or(L0), t.t.clone()));
         }
         r.compute(f, max_passes);
+        if r.ok {
+            r.narrow_with_bits(f);
+        }
         r
+    }
+
+    /// Intersect every interval with the one the known bits give (both are true facts).
+    fn narrow_with_bits(&mut self, f: &mut Func) {
+        let bits = crate::domain::Bits::run(f);
+        if !bits.ok {
+            return;
+        }
+        for (i, t) in bits.t.iter().enumerate() {
+            if let (Some(t), Some(Some(iv))) = (t, self.base.get(i)) {
+                let lo = iv.0.max(t.umin() as i64);
+                let hi = iv.1.min(t.umax() as i64);
+                if lo <= hi {
+                    self.base[i] = Some((lo, hi));
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------------
