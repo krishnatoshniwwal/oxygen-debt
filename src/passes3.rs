@@ -429,14 +429,17 @@ pub fn iv_rewrite(f: &mut Func, rng: &Ranges) -> bool {
                 Some(p) => p,
                 None => continue,
             };
+            // the step: a constant, or a value defined outside the loop (loop-invariant, and its
+            // definition dominates the loop because SSA uses are dominated by their definitions)
+            let invariant = |x: i64| x < 0 || ((x as usize) < nv0 && x != i && defb[x as usize] != usize::MAX && !ids.contains(&defb[x as usize]));
             let c = {
                 let ins = &f.arena[bn].ins[pos];
                 if ins.op != Op::Add {
                     continue;
                 }
-                if ins.a[0] == i && ins.a[1] < 0 {
+                if ins.a[0] == i && invariant(ins.a[1]) {
                     ins.a[1]
-                } else if ins.a[1] == i && ins.a[0] < 0 {
+                } else if ins.a[1] == i && invariant(ins.a[0]) {
                     ins.a[0]
                 } else {
                     continue;
