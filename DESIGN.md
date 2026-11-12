@@ -637,3 +637,12 @@ literal `c` in 2..4096: counters `r' = r+1; w = (r' == c); r = select(w, 0, r');
 with `r0 = i0 % c`, `q0 = i0 / c` replace the `mod` / `div`. Exact for non-negative i.
 Checked by `tests/alg_div.py` (n = 0..299, 2^31, 2^32-1) and the bench (0 failures). Chosen by the search.
 `count_divisors` uses `n % i` (variable divisor), which this does not touch.
+
+**Node splitting** (`control::split_entries`, always on, no effect unless a cycle has two
+entrances). A cycle (strongly connected component) entered at several blocks is irreducible, so
+no loop pass touches it. The first entrance (lowest block id) stays the header; every other
+entrance block E (<= 24 instructions) gets a copy E' that takes over all edges from outside the
+cycle. E' is outside the cycle, which now has one entrance. Pure block copying. On
+`irreducible_loop`: 416 -> 200 cycles at P=4 and 608 -> 216 at P=8 (variants; the original was
+slower than the input there before). Tried and dropped: a larger tail-copy size (24) as an extra
+back end changed no result on P in {0,4,8}.
