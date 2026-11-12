@@ -88,7 +88,10 @@ pub fn build_ssa(f: &mut Func) {
                 let mut r = f.arena[b].preds[k];
                 while Some(r) != bidom {
                     let lst = &mut df[r];
-                    if lst.last() != Some(&b) && !lst.contains(&b) {
+                    if lst.last() == Some(&b) {
+                        break; // an earlier predecessor of b already climbed through r and above
+                    }
+                    if !lst.contains(&b) {
                         lst.push(b);
                     }
                     r = f.arena[r].idom.unwrap();
@@ -131,6 +134,9 @@ pub fn build_ssa(f: &mut Func) {
         stacks[p as usize].push(nv);
     }
     f.params = newparams;
+    // position of a predecessor in a block with many predecessors (a linear search per edge
+    // would be quadratic for a join with tens of thousands of incoming edges)
+    let mut pred_pos: HashMap<usize, HashMap<usize, usize>> = HashMap::new();
     let mut stack: Vec<(usize, Option<Vec<i64>>)> = vec![(entry, None)];
     while let Some((b, pushed)) = stack.pop() {
         if let Some(pv) = pushed {
@@ -191,7 +197,12 @@ pub fn build_ssa(f: &mut Func) {
         let succs = f.arena[b].succs().to_vec();
         for sb in succs {
             if !f.arena[sb].phis.is_empty() {
-                let idx = f.arena[sb].preds.iter().position(|&p| p == b).unwrap();
+                let idx = if f.arena[sb].preds.len() > 16 {
+                    let m = pred_pos.entry(sb).or_insert_with(|| f.arena[sb].preds.iter().enumerate().map(|(i, &p)| (p, i)).collect());
+                    m[&b]
+                } else {
+                    f.arena[sb].preds.iter().position(|&p| p == b).unwrap()
+                };
                 for pi in 0..f.arena[sb].phis.len() {
                     let v = f.arena[sb].phis[pi].pv;
                     f.arena[sb].phis[pi].a[idx] = match stacks[v as usize].last() {

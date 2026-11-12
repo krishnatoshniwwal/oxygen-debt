@@ -169,3 +169,10 @@ impl Reference {
         true
     }
 }
+
+impl Reference {
+    /// The first `k` timing inputs (used by large.rs to count how often each block runs).
+    pub fn first_inputs(&self, k: usize) -> Vec<Inputs> {
+        self.timing.iter().take(k).map(|t| t.0.clone()).collect()
+    }
+}

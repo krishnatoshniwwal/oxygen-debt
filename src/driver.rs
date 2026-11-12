@@ -3,6 +3,7 @@ use crate::algebra;
 use crate::backend;
 use crate::evalsim::Reference;
 use crate::ir::{self, Func};
+use crate::large;
 use crate::kir::*;
 use crate::loopopt;
 use crate::control;
@@ -199,7 +200,6 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 /// Everything up to (not including) the choice of block order and final code copying.
 fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func, String> {
     let mut t = prof_start();
-    let mut f = ir::from_program(prog);
     let ic = mc.icache_size;
     if v.thr > 0 && !light {
         let cap = (3 * ic).max(64) as usize;
@@ -208,8 +208,9 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
         }
     }
     ssa::build_ssa(&mut f);
+    let mut f = large::start_func(prog, mc, v.ifc);
     chk(&mut f, "build_ssa");
-    prof("build_ssa", &mut t);
+    prof("build_ssa (+reroll)", &mut t);
     phase_a(&mut f, v, light);
     prof("phase_a total", &mut t);
     if v.peel != 0 {
@@ -323,7 +324,7 @@ fn finish(f: &mut Func, mc: &Machine, profile: Option<&backend::Profile>, maxdup
         backend::unroll(f, factor, budget.max(0));
         backend::final_cleanup(f);
     }
-    backend::layout(f, profile);
+    large::layout(f, mc, profile);
     ir::to_text(f)
 }
 
@@ -484,6 +485,9 @@ impl<'a> Search<'a> {
         }
         match r {
             Ok(Ok((out, Some((cp, size, sc)), _))) => {
+                if self.size > MID {
+                    large::publish(self.rf, &cp, sc, self.rf.base(), &out);
+                }
                 self.seen.insert(out.clone(), sc);
                 let tsp = self.try_tsp(&f, &cp, v, be);
                 self.results.push(Cand { score: sc, size, order: self.n, text: out, cp, desc: format!("{:?} {:?}", v, be) });
@@ -503,11 +507,66 @@ impl<'a> Search<'a> {
     }
 }
 
+
+/// Candidates from large.rs on one setting of the knobs: hot/cold layouts, and rerolling of
+/// straight-line repetition (each rerolling mode with a few register/scheduling settings). The
+/// mid-ends of the plain setting are kept for the layouts; rerolling needs its own.
+fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: usize) {
+    // Hot/cold layout (large.rs): the best setting again, with the loops moved in front of
+    // run-once code. Needs no new mid-end run (the mids are kept).
+    if size as i64 > mc.icache_size && !large::soft_expired() {
+        let v = v0x;
+        for lm in [1u8, 2] {
+            large::set_layout(lm);
+            s.run(&v, b0);
+        }
+        large::set_layout(0);
+    }
+    // Rerolling of straight-line repetition (large.rs): one more candidate per mode, on the best
+    // setting found. Only programs that do not fit in the instruction cache are worth it.
+    if size as i64 > mc.icache_size + 8 {
+        let saved = std::mem::take(&mut s.mids);
+        let cap = if size > MID { 14 * size + 10_000 } else { usize::MAX };
+        for mode in [1u8, 2, 3] {
+            if large::soft_expired() || s.spent > cap {
+                break;
+            }
+            large::set_roll(mode);
+            if !large::start_func_ex(s.prog, mc, v0x.ifc).1 {
+                continue; // nothing was rolled: the same program as without rerolling
+            }
+            s.mids.clear();
+            let b = v0x;
+            let mut vs = vec![b, Variant { spill: !b.spill, ..b }];
+            if size <= MID {
+                vs.extend([Variant { sched: !b.sched, ..b }, Variant { hot: !b.hot, ..b }, Variant { fwd: !b.fwd, ..b }]);
+            }
+            vs.dedup();
+            for v in vs {
+                if large::soft_expired() || s.spent > cap {
+                    break;
+                }
+                s.run(&v, b0);
+                for lm in [1u8, 2] {
+                    large::set_layout(lm);
+                    s.run(&v, b0);
+                }
+                large::set_layout(0);
+            }
+        }
+        large::set_roll(0);
+        s.mids = saved;
+    }
+}
+
 const WORK_BUDGET: usize = 16000; // the search stops when this much work has been spent
 
 /// Return the optimized program text. Falls back to the input text on any problem.
 pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<String, String> {
     let prog = parse_program(text)?; // an invalid input is an error
+    if large::too_hostile(&prog) {
+        return Ok(text.to_string());
+    }
     let profile = profile_text.map(backend::parse_profile);
     let size = prog.instrs.len();
     let mut t = prof_start();
@@ -516,6 +575,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         Err(_) => return Ok(text.to_string()),
     };
     prof("reference runs", &mut t);
+    large::set_count_inputs(rf.first_inputs(2));
     let mut s = Search {
         prog: &prog,
         mc,
@@ -539,9 +599,18 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     };
     let mut state: (Variant, Option<f64>) = (v0, None);
     state.1 = s.run(&state.0, b0);
+    let t_first = large::elapsed_ms();
+    if size > MID {
+        large_extras(&mut s, state.0, b0, mc, size);
+    }
+    // a big win by rerolling makes the settings of the plain program irrelevant
+    let rolled_big_win = match (s.results.iter().map(|c| c.score).fold(f64::INFINITY, f64::min), rf.base()) {
+        (m, Some(b)) => m < 0.5 * b,
+        _ => false,
+    };
 
     fn consider(s: &mut Search, state: &mut (Variant, Option<f64>), v: Variant) {
-        if s.spent > WORK_BUDGET {
+        if s.spent > WORK_BUDGET || large::soft_expired() {
             return;
         }
         let sc = s.run(&v, BACKENDS[0]);
@@ -569,6 +638,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
         tries.push(Variant { ifc: 0, ..b });
         for v in tries {
+            if large::soft_expired() || rolled_big_win || !large::fits_half(t_first) {
+                break;
+            }
             let sc = s.run(&v, b0);
             if let Some(sc) = sc {
                 if state.1.map_or(true, |x| sc < x - 1e-9) {
@@ -789,6 +861,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
     }
     post_sched2(&mut s);
+    if size <= MID {
+        large_extras(&mut s, state.0, b0, mc, size);
+    }
     let mut order: Vec<usize> = (0..s.results.len()).collect();
     order.sort_by(|&a, &b| {
         let (x, y) = (&s.results[a], &s.results[b]);

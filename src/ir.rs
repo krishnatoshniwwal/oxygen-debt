@@ -268,7 +268,8 @@ pub fn compute_preds(f: &mut Func) {
         let b = f.blocks[i];
         let succs = f.arena[b].succs().to_vec();
         for s in succs {
-            if !f.arena[s].preds.contains(&b) {
+            // b only ever pushes while it is being processed, so a duplicate is always the last entry
+            if f.arena[s].preds.last() != Some(&b) {
                 f.arena[s].preds.push(b);
             }
         }
