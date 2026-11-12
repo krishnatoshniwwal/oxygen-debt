@@ -525,6 +525,41 @@ fn cmd_min(a: &Args) -> i32 {
     0
 }
 
+fn cmd_diff(a: &Args) -> i32 {
+    let (ta, tb) = (read_text(&a.pos[0]).unwrap(), read_text(&a.pos[1]).unwrap());
+    let (pa, pb) = (parse_program(&ta).unwrap(), parse_program(&tb).unwrap());
+    let mc = Machine { issue_width: 2, mem_ports: 1, registers: 8, reg_spill_penalty: 5, taken_branch_penalty: 2, icache_size: 64, icache_penalty: 2, lat_alu: 1, lat_mul: 3, lat_div: 12, lat_load: 4, lat_mac: 3, lat_addsh: 1, fused_mac: 1, fused_addsh: 1 };
+    let mut ins = check::make_inputs(&pa, 5, 100);
+    let mut rng = Rng::new(3);
+    for _ in 0..400 {
+        let mut i = ins[0].clone();
+        for x in i.args.iter_mut() {
+            *x = [rng.below(20) as u32, 2 + rng.below(2000) as u32, (rng.below(10) as u32 + 1).wrapping_neg(), rng.next() as u32][rng.below(4) as usize];
+        }
+        let bound = [256u64, 100, 16, 1000][rng.below(4) as usize];
+        let words: Vec<u32> = (0..256).map(|_| rng.below(bound) as u32).collect();
+        i.segments = vec![(0, words)];
+        ins.push(i);
+    }
+    let (ca, cb) = (compile_program(&pa), compile_program(&pb));
+    for (k, i) in ins.iter().enumerate() {
+        let ra = execute(&ca, i, 200_000, false);
+        let rb = execute(&cb, i, 4 * ra.steps + 1000, false);
+        if ra.outcome != Outcome::Timeout && differs(&ra, &rb) {
+            println!("input #{} args {:?}
+  A: {:?} vlog {}
+  B: {:?} vlog {}", k, i.args, ra.outcome, ra.vlog.len(), rb.outcome, rb.vlog.len());
+            if let Some(x) = (0..SCRATCH_BASE).find(|&j| ra.mem[j] != rb.mem[j]) {
+                println!("  mem[{}] A={} B={}", x, ra.mem[x], rb.mem[x]);
+            }
+            let _ = &mc;
+            return 1;
+        }
+    }
+    println!("no difference");
+    0
+}
+
 fn cmd_show(a: &Args) -> i32 {
     let seed: u64 = a.num("seed", 1u64);
     let mc = gen::gen_machine(seed);
@@ -543,6 +578,7 @@ fn main() {
         "mutate" => cmd_mutate(&a),
         "min" => cmd_min(&a),
         "show" => cmd_show(&a),
+        "diff" => cmd_diff(&a),
         _ => {
             eprintln!("usage: kfuzz gen|bench|machines|mutate|min|show [--n N] [--seed S] [--jobs J] [--kit DIR] [--kopt PATH] [--nomin] [--inputs N]");
             2

@@ -380,6 +380,61 @@ kopt's own inputs. Without a profile only the static estimate is used.
   itself. kopt does not simplify such values, and the rewrite rules and the replacement map
   have loop guards, because an earlier version could loop forever on them.
 
+## 8. Verification tools (offline) and the stronger self-check
+
+**kfuzz** (`src/bin/kfuzz/`, built with `cargo build --release --offline --features tools`; not part
+of `build.sh`). It runs the real `kopt` binary on a case and compares the output with the input on
+many inputs (the kit generator, every program literal +-1 as an argument, memory images of 600 to
+4096 words, empty and all-ones memory, long and empty `vin` queues). Sub-commands: `gen` (random
+programs x random machines), `bench` (kit programs x kit machines), `machines` (kit programs x random
+machines: every key over its legal range), `mutate` (judge simulator), `min`, `diff`, `show`.
+* The generator builds valid programs with traps (div by 0, wild address, explicit trap), `vload` /
+  `vstore`, loops with two entrances, aliasing stores, up to ~45 live registers, masked and constant
+  trip counts, deep if/switch nests, unreachable blocks, scratch-region accesses and the bench idioms
+  (checksums with `mod`, `i + k` array walks, guarded division, CRC steps, checked add).
+* The judge simulator renames registers, shuffles blocks (entry first), renames labels and changes
+  constants (as the rules say), plus EMI mutations: opaque-predicate guards with junk on the never-taken
+  side (semantics kept exactly, so the output is also compared with the *unmutated* program), junk inserted
+  into blocks that did not run, dead code deleted.
+* Problems reported: `mismatch`, `invalid`, `crash`, `timeout`, `nondeterministic`, `caught-selfcheck` /
+  `caught-timing` / `pass-failed` (kopt noticed a bad candidate itself: a pass bug that the safety net
+  hid), `slow`, `regress` (cycle total of output above the input on the test inputs: informational).
+  Failing cases are minimised automatically (branch -> jump, instruction deletion, operand and
+  computation simplification).
+* Results so far (all with no wrong output): about 14,000 random programs, 500 bench cases (all five
+  machines), 4,000 mutations, 2,600 random machines. The self-check and timing check caught
+  four candidates from two real pass bugs, both fixed (see below).
+
+**Bugs found.** (1) `speculate` trusted the range of an address defined in the block it was emptying;
+that range was computed under the loop test, so a load with address `i + 1` where `i` steps by 16386
+was hoisted above the exit test and trapped spuriously (minimal repro: loop `i += 16385 + 1` with
+`load [i+1]`). Now only values defined outside the block, or moved values whose range is recomputed at
+the new place, are trusted. (2) `lazy_mod` rewrote uses after the loop to `s % m` without requiring the
+initial `s0 < m`; with zero iterations the original returns the unreduced `s0` (repro: Fletcher loop with
+`s = 2^30`, `n = 0`). It now requires `s0 < m`. (3, not a bug) the search rejects spill-heavy candidates
+that need more than 4x the original steps (`evalsim::score`); they are correct, only lost.
+
+**Stronger self-check** (`src/validate.rs`, called after `Reference::same`). (1) Literals +-1 as
+arguments. (2) Exhaustion: a dataflow finds which parameters can only be read through `and p, CONST`
+(single-definition constant); then all 2^popcount values (up to 65536 combinations) are run; if the
+program also has no `load` and no `vload` this is a complete proof. (3) Inverse execution (a small
+solver-free concolic step): the trace records operand values and definition sites; for every divisor,
+address and branch condition, the wanted value (0, 4096, other branch side) is pushed back through
+`add sub xor mul(any constant) shl shr and or lt eq select mac addsh mov` and loads of never-written
+words to an argument or a memory word, which is changed; the new inputs are run and inverted again (two
+rounds). It finds traps behind guards such as `x == 1234567`. All with a fixed step budget (6M steps).
+
+**Value-graph translation validator** (`src/vgraph.rs`, `prove(orig, cand)`; used by kfuzz, not needed at
+run time). Both programs are executed symbolically path by path on one hash-consed term graph; terms
+are canonical: ring terms as polynomials mod 2^32, bitwise terms as GF(2) algebraic normal forms with
+mask coefficients (complete for the ring and for pure bitwise identities), `lt/eq/shr/div/mod/select`/loads
+as atoms over canonical operands (sound, incomplete), and differences that are linear mixed
+boolean-arithmetic are decided by the 0/1-input theorem (f == 0 for all x iff g(b) == 0 mod 2^32 for all
+b in {0,1}^n). A path = the conditions it assumed; each original path must be matched by a candidate path
+with a subset of its conditions (equal or coarser, e.g. after if-conversion) with equal result/trap,
+volatile log and memory; unmatched = `Unproved` (never "wrong"). Only loop-free programs are handled
+(`NotApplicable` otherwise: about 80 % of the generated programs, 76 % of bench). In kfuzz runs it proved
+~2,700 cases and never contradicted a run (`VALIDATOR-UNSOUND` is reported if it ever does).
 ---
 
 ## 8. Loop transformations for arrays and counted loops (`src/loopopt.rs`)
