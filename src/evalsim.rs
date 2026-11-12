@@ -51,6 +51,8 @@ pub struct Reference {
     pub mc: Machine,
     checks: Vec<(Inputs, ExecResult)>,
     timing: Vec<(Inputs, ExecResult, i64)>,
+    nparams: usize,
+    size: usize,
 }
 
 impl Reference {
@@ -64,7 +66,7 @@ impl Reference {
         } else {
             (56, 8, 20000, 400000)
         };
-        let mut r = Reference { mc: mc.clone(), checks: Vec::new(), timing: Vec::new() };
+        let mut r = Reference { mc: mc.clone(), checks: Vec::new(), timing: Vec::new(), nparams, size };
         let mut used = 0u64;
         let mut tsteps = 0u64;
         for inp in timing_inputs(nparams, ntime) {
@@ -123,6 +125,22 @@ impl Reference {
             let res = execute(cp, inp, 4 * rf.steps + 1000, true);
             if res.outcome != Outcome::Timeout {
                 out.push(res.trace);
+            }
+        }
+        // more made-up inputs of the same shape (small programs only), so that block orders
+        // are not fitted to just the 8 scored inputs
+        if self.size <= 2000 {
+            let mut steps = 0u64;
+            for inp in timing_inputs(self.nparams, 32).into_iter().skip(8) {
+                let res = execute(cp, &inp, 20000, true);
+                if res.outcome == Outcome::Timeout {
+                    continue;
+                }
+                steps += res.steps;
+                out.push(res.trace);
+                if steps > 300_000 {
+                    break;
+                }
             }
         }
         out
