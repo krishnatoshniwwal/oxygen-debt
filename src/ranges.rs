@@ -228,7 +228,7 @@ impl Ranges {
         out
     }
 
-    fn xfer(&self, ins: &Instr, b: usize) -> Option<Iv> {
+    pub fn xfer(&self, ins: &Instr, b: usize) -> Option<Iv> {
         let op = ins.op;
         let a = &ins.a;
         if op == Op::Load || op == Op::Vload {

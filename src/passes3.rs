@@ -724,6 +724,11 @@ pub fn lazy_mod(f: &mut Func, rng: &Ranges) -> bool {
             if rt.1 > SMAX_I || rs0.1 > SMAX_I {
                 continue;
             }
+            // with no iteration at all the original keeps s0 unreduced, but a use after the loop
+            // reads s % m: only equal when s0 < m
+            if rs0.1 >= m {
+                continue;
+            }
             if (rs0.1 as i128) + ntrip * (rt.1 as i128) > SMAX_I as i128 {
                 continue;
             }
@@ -758,6 +763,33 @@ pub fn lazy_mod(f: &mut Func, rng: &Ranges) -> bool {
         crate::passes::apply_rep(f, &rep);
     }
     changed
+}
+
+/// May `ins` trap when run at the end of block `p`? Like `Ranges::may_trap`, but a value defined
+/// in the block being emptied is only trusted through `mrange`.
+fn spec_may_trap(rng: &Ranges, ins: &Instr, p: usize, in_s: &std::collections::HashSet<i64>, mrange: &HashMap<i64, (i64, i64)>) -> bool {
+    let rg = |x: i64| -> (i64, i64) {
+        if x < 0 {
+            (!x, !x)
+        } else if let Some(&r) = mrange.get(&x) {
+            r
+        } else if in_s.contains(&x) {
+            (0, 0xFFFF_FFFF)
+        } else {
+            rng.get(x, p)
+        }
+    };
+    match ins.op {
+        Op::Load | Op::Store => !rng.ok || rg(ins.a[0]).1 >= 4096,
+        Op::Div | Op::Mod => {
+            let y = ins.a[1];
+            if y < 0 {
+                return !y == 0;
+            }
+            !rng.ok || rg(y).0 < 1
+        }
+        op => op == Op::Trap,
+    }
 }
 
 /// Speculation inside loops (SSA form, before scheduling). A block `s` whose only
@@ -808,6 +840,10 @@ pub fn speculate(f: &mut Func, rng: &Ranges, limit: usize, sweeps: usize) -> boo
         }
     }
     let mut changed = false;
+    // values moved by this call (in any sweep): their ranges, computed where they used to be,
+    // are stale; `mrange` holds a recomputed range where one could be proven
+    let mut moved_vals: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut mrange: HashMap<i64, (i64, i64)> = HashMap::new();
     for _ in 0..sweeps {
         let mut moved_any = false;
         // blocks that received work in this sweep give nothing away in the same sweep, so
@@ -857,6 +893,12 @@ pub fn speculate(f: &mut Func, rng: &Ranges, limit: usize, sweeps: usize) -> boo
             let mut moved: Vec<Instr> = Vec::new();
             let body = std::mem::take(&mut f.arena[s].ins);
             let last = n - 1;
+            // Ranges of values defined in `s` were computed under the conditions that hold in `s`
+            // (for example the loop test); they do not hold at `p`. A trap-freedom proof at `p`
+            // may therefore use only values defined outside `s`, or the range of a moved
+            // instruction whose operands are all defined outside `s`, recomputed at `p`.
+            let mut in_s: std::collections::HashSet<i64> = body.iter().filter(|i| i.has_d()).map(|i| i.d).collect();
+            in_s.extend(moved_vals.iter().copied());
             // a load may only move if no store / volatile op comes before it in s (then it
             // still runs after every memory operation it ran after before: those of p)
             let mut mem_before = false;
@@ -868,13 +910,22 @@ pub fn speculate(f: &mut Func, rng: &Ranges, limit: usize, sweeps: usize) -> boo
                     && ins.has_d()
                     && !(ins.d >= 0 && (ins.d as usize) < nv && phi_use[ins.d as usize])
                     && (is_pure(ins.op)
-                        || (matches!(ins.op, Op::Div | Op::Mod) && !rng.may_trap(&ins, p))
-                        || (is_load && !mem_before && !rng.may_trap(&ins, p)))
+                        || (matches!(ins.op, Op::Div | Op::Mod) && !spec_may_trap(rng, &ins, p, &in_s, &mrange))
+                        || (is_load && !mem_before && !spec_may_trap(rng, &ins, p, &in_s, &mrange)))
                     && ins.a.iter().all(|&x| x < 0 || (x as usize) >= nv || defb[x as usize] != s);
                 if !ok && matches!(ins.op, Op::Store | Op::Vstore | Op::Vload) {
                     mem_before = true;
                 }
                 if ok {
+                    if ins.has_d() {
+                        mrange.remove(&ins.d);
+                        if ins.a.iter().all(|&x| x < 0 || !in_s.contains(&x)) {
+                            if let Some(r) = rng.xfer(&ins, p) {
+                                mrange.insert(ins.d, r);
+                            }
+                        }
+                        moved_vals.insert(ins.d);
+                    }
                     if ins.d >= 0 && (ins.d as usize) < nv {
                         defb[ins.d as usize] = p;
                     }
