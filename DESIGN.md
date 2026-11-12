@@ -483,3 +483,38 @@ self-checked.
 held-out variants 265790 -> 247999, no mismatches.
 **Not done:** global LRU-aware naming (MIN, rematerialisation, scratch), branch and bound for small blocks,
 memory ordering from range proofs, large programs.
+## 8. Loop algebra (`src/algebra.rs`, setting `alg`, bit 1)
+
+**Closed forms** (`algebra::closed_forms`, SSA form, optional, chosen by the search; runs in each SSA
+round before the range rewrites). A loop qualifies when it has one entry edge from a block that
+ends in `jmp header`, one back edge, a header ending in `br c, body, exit` (either orientation) and
+a straight chain of blocks as the rest; every instruction is trap-free arithmetic (no load, store,
+volatile, trap, `div`/`mod` by a non-literal); every value used after the loop is a polynomial of
+degree <= 4 in the iteration number k. Values are kept as polynomials in the binomial basis
+`sum c_j C(k,j)` (coefficients are literals or outside values; products use
+`C(k,a)C(k,b) = sum_t C(t,a)C(a,t-b)C(k,t)`); a header phi `p = phi(i0, p + f)` gets
+`i0 + sum_m f_m C(k,m+1)`, other phis are solved in rounds. The trip count T comes from the exit
+test with the **signed** `lt`: `T = n - i0` if `i0 <s n` else 0 (guard dropped when the ranges
+prove it); the other supported tests are the falling counter and `eq` with an odd step
+(`T = (B0-A0) * inverse(step)`). The values are evaluated at k = T before the loop and the loop
+is cut off (header jumps to the exit; the chain becomes unreachable). Zero trips are part of the
+formula. Binomials are exact mod 2^32 without dividing a wrapped value by an even number:
+`C(k,2) = (k>>1)*((k-1)|1)`, `C(k,3) = C(k,2)*(k-2)*inv3`, and `a4*C(k,4) = (a4>>1) * C(k,2)*C(k-2,2)*inv3`
+(only when `a4` is provably even; true for sums of cubes: a4 = 6). Safe because it is the same
+function of the inputs, only computed directly; loops with any effect or trap are never touched.
+Tests: `cargo test algebra` (8-bit analogue of the binomials for every k, random 32-bit and
+edge vectors against a reference, polynomial products) and `tests/alg_edge.py` (unmasked loops
+with n = 0..69, 2^31, 2^32-1 against the input program).
+Bench (5 machines): total cycles on the sample inputs -3.6 % (default 58043 -> 55961), 0 failures;
+sum_sq, nested_invariant, loop_invariant, sum_cubes_mod drop 5-20x.
+Not done yet: division by constants, divisibility tests, i/c and i%c counters, strength
+reduction, larger compile-time evaluation, the GF(2) / idiom items.
+
+**Division by a constant with a low multiply** (`algebra::div_const`, `alg` bit 2). `div x, c` /
+`mod x, c` (c a literal, not a power of two) with `0 <= x <= xmax < 2^31` proven by the ranges
+becomes `q = (x*m) >> s` (remainder `x - q*c`) when a pair (m, s) exists with `m = ceil(2^s/c)`,
+`xmax*m < 2^32` (no wrap) and `(m*c - 2^s)*xmax < 2^s` (exact). Tested for c < 400 and
+xmax up to 10^5 against real division. Chosen by the search only (bench: 4 cases changed,
+`digit_sum|wide_fast` 360 -> 330; two few_registers cases lose 2-9 % through the greedy search
+order). Not done: peeling until x is in range (`digit_sum`), signed division with bias,
+divisibility tests, `i/c` counters, strength reduction, larger constant evaluation, GF(2)/idioms.
