@@ -9,6 +9,7 @@ mod ir;
 mod large;
 mod kir;
 mod loopopt;
+mod memfwd;
 mod layout;
 mod passes;
 mod passes2;

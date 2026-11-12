@@ -6,6 +6,7 @@ use crate::ir::{self, Func};
 use crate::large;
 use crate::kir::*;
 use crate::loopopt;
+use crate::memfwd;
 use crate::control;
 use crate::layout;
 use crate::passes;
@@ -273,6 +274,10 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     if srv && !light {
         loopopt::reuse_loads(&mut f);
         chk(&mut f, "reuse_loads");
+        if memfwd::forward(&mut f) {
+            chk(&mut f, "memfwd");
+            passes::dce(&mut f, None);
+        }
     }
     let rotv = std::env::var("KOPT_FORCE_ROT").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.rot);
     if rotv > 0 && !light {
