@@ -620,13 +620,21 @@ fn pick_spills(g: &Graph, k: usize, nospill: &HashSet<i64>) -> Vec<i64> {
 
 /// Keep every spilled register in a scratch-memory word: store after each definition,
 /// load before each use (through a fresh short-lived register).
-fn rewrite_spills(f: &mut Func, g: &mut Graph, slot_of: &HashMap<i64, usize>, nospill: &mut HashSet<i64>) {
+fn rewrite_spills(f: &mut Func, g: &mut Graph, slot_of: &HashMap<i64, usize>, nospill: &mut HashSet<i64>, reuse: usize) {
     for bi in 0..f.blocks.len() {
         let b = f.blocks[bi];
         let old = std::mem::take(&mut f.arena[b].ins);
         let mut out: Vec<Instr> = Vec::with_capacity(old.len());
+        // reuse > 0: the last `reuse` values loaded from (or stored to) a scratch word in this block
+        // stay available for later uses of that word until it is written again
+        let mut cache: Vec<(usize, i64)> = Vec::new();
         for mut ins in old {
             let dslot = if ins.has_d() { slot_of.get(&g.find(ins.d)).copied() } else { None };
+            if let Some(ds) = dslot {
+                if ins.op == Op::Mov || ins.op == Op::Const {
+                    cache.retain(|e| e.0 != ds); // written below without a temp of its own
+                }
+            }
             if ins.op == Op::Mov && dslot.is_some() {
                 let s = ins.a[0];
                 let sslot = if s >= 0 { slot_of.get(&g.find(s)).copied() } else { None };
@@ -648,13 +656,20 @@ fn rewrite_spills(f: &mut Func, g: &mut Graph, slot_of: &HashMap<i64, usize>, no
                 let x = ins.a[i];
                 if x >= 0 {
                     if let Some(sl) = slot_of.get(&g.find(x)).copied() {
-                        let t = match loaded.get(&sl) {
-                            Some(&t) => t,
+                        let cached = if reuse > 0 { cache.iter().find(|e| e.0 == sl).map(|e| e.1) } else { None };
+                        let t = match loaded.get(&sl).copied().or(cached) {
+                            Some(t) => t,
                             None => {
                                 let t = f.new_val();
                                 nospill.insert(t);
                                 loaded.insert(sl, t);
                                 out.push(Instr::new(Op::Load, t, vec![lit(sl as i64)], vec![]));
+                                if reuse > 0 {
+                                    cache.push((sl, t));
+                                    if cache.len() > reuse {
+                                        cache.remove(0);
+                                    }
+                                }
                                 t
                             }
                         };
@@ -668,6 +683,13 @@ fn rewrite_spills(f: &mut Func, g: &mut Graph, slot_of: &HashMap<i64, usize>, no
                 ins.d = t;
                 out.push(ins);
                 out.push(Instr::no_d(Op::Store, vec![lit(ds as i64), t], vec![]));
+                if reuse > 0 {
+                    cache.retain(|e| e.0 != ds);
+                    cache.push((ds, t));
+                    if cache.len() > reuse {
+                        cache.remove(0);
+                    }
+                }
             } else {
                 out.push(ins);
             }
@@ -710,7 +732,7 @@ pub const SCRATCH_WORDS: usize = 1024;
 /// that scratch memory is free): if more than k names are needed, first keep the n-th value
 /// of the hottest blocks' live-in values (least-touched first) in scratch memory. Which one
 /// pays is measured by the search. Returns the number of names.
-pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: usize) -> Result<i64, String> {
+pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: usize, reuse: usize) -> Result<i64, String> {
     let mut nospill: HashSet<i64> = HashSet::new();
     let mut nslots = 0usize;
     if force > 0 && k.is_some() {
@@ -734,7 +756,7 @@ pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: u
                 let mut slot_of: HashMap<i64, usize> = HashMap::new();
                 slot_of.insert(v, SCRATCH_BASE + nslots);
                 nslots += 1;
-                rewrite_spills(f, &mut gg, &slot_of, &mut nospill);
+                rewrite_spills(f, &mut gg, &slot_of, &mut nospill, reuse);
             }
         }
     }
@@ -762,7 +784,7 @@ pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: u
             slot_of.insert(v, SCRATCH_BASE + nslots);
             nslots += 1;
         }
-        rewrite_spills(f, &mut gg, &slot_of, &mut nospill);
+        rewrite_spills(f, &mut gg, &slot_of, &mut nospill, reuse);
     }
     let (col, ncol) = match k {
         Some(kk) if hot && ncol as usize > kk => colour_hot(&g),

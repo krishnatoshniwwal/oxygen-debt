@@ -44,12 +44,13 @@ pub struct Variant {
     pub alg: u8,     // loop algebra (algebra.rs), bit 1 = closed forms of polynomial loops
     pub tree: bool,  // tree-height reduction of add/mul/xor/and/or chains
     pub sccp: bool,  // optimistic conditional constant propagation combined with the ranges
+    pub reuse: u8,   // spill code: keep the last n loaded/stored scratch words available for later uses (0 = reload at every use)
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0 }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0, reuse: 0 }
     }
 }
 
@@ -318,7 +319,7 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     prof("destruct_ssa", &mut t);
     let k = mc.registers as usize;
     let force = if scratch_ok { v.spill1 as usize } else { 0 };
-    f.nreg = ssa::allocate(&mut f, Some(k), v.spill && scratch_ok, v.hot, force)?;
+    f.nreg = ssa::allocate(&mut f, Some(k), v.spill && scratch_ok, v.hot, force, v.reuse as usize)?;
     prof("allocate", &mut t);
     backend::final_cleanup(&mut f);
     prof("final_cleanup", &mut t);
@@ -663,6 +664,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             }
         }
     }
+    let mut early_b: Option<Variant> = None;
     if size <= MID {
         let over_k = |s: &Search, v: &Variant| -> bool {
             match s.mids.get(v) {
@@ -678,6 +680,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         let b = state.0;
         consider(&mut s, &mut state, Variant { alg: b.alg | 4, ..b });
         if over_k(&s, &state.0) {
+            early_b = Some(state.0);
             // More names than registers. Spilling to scratch is one answer; keeping the
             // program order (scheduling stretches live ranges) and giving hot values the low
             // names (LRU register file) are others. Try them before the search settles.
@@ -822,6 +825,28 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         if let Some(sc) = s.run(&v, BACKENDS[0]) {
             if state.1.map_or(true, |b| sc < b - 1e-9) {
                 *state = (v, Some(sc));
+            }
+        }
+    }
+    if size <= MID && std::env::var_os("KOPT_NOREUSE").is_none() {
+        // Reload cache in the spill code (ssa.rs rewrite_spills): after the general search, on its
+        // final setting, so that it can only add candidates (it never changes the path of the walk).
+        let b = state.0;
+        let mut bases = vec![b];
+        if let Some(e) = early_b {
+            if e != b {
+                bases.push(e);
+            }
+        }
+        for base in bases {
+            for r in [2u8, 3, 4] {
+                let v = Variant { spill: true, reuse: r, ..base };
+                if v != b {
+                    consider2(&mut s, &mut state, v);
+                }
+            }
+            if base.spill {
+                continue;
             }
         }
     }
