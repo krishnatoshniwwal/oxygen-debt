@@ -575,3 +575,10 @@ faithful copy and every new edge an old edge, so the transformation is correct w
 tracking believes; the SSA passes then fold `eq state, K` in each copy and the dispatch
 disappears (vending_fsm -30 % cycles). Growth is capped at 3 * icache_size instructions (nothing
 changes if more would be added); the search measures it like every other knob.
+
+**`i / c` and `i % c` of an induction variable** (`algebra::iv_divmod`, `alg` bit 4). For
+`i = phi(i0, i + 1)` with a literal `i0` in [0, 2^31) and `i` proven in [0, 2^31) at the use, a
+literal `c` in 2..4096: counters `r' = r+1; w = (r' == c); r = select(w, 0, r'); q = q + w`
+with `r0 = i0 % c`, `q0 = i0 / c` replace the `mod` / `div`. Exact for non-negative i.
+Checked by `tests/alg_div.py` (n = 0..299, 2^31, 2^32-1) and the bench (0 failures). Chosen by the search.
+`count_divisors` uses `n % i` (variable divisor), which this does not touch.

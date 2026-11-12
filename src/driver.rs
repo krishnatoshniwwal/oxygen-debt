@@ -148,6 +148,14 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
                 lz = true;
             }
         }
+        if v.alg & 4 != 0 {
+            let rng = Ranges::new(f, 14);
+            if algebra::iv_divmod(f, &rng) {
+                chk(f, "iv_divmod");
+                scalar(f);
+                lz = true;
+            }
+        }
         let mut rng = Ranges::new(f, 14);
         prof("  ranges", &mut t);
         let c1 = passes2::range_simplify(f, &rng, v.csub);
@@ -662,6 +670,8 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, Variant { alg: 1, ..b });
         let b = state.0;
         consider(&mut s, &mut state, Variant { alg: b.alg | 2, ..b });
+        let b = state.0;
+        consider(&mut s, &mut state, Variant { alg: b.alg | 4, ..b });
         if over_k(&s, &state.0) {
             // More names than registers. Spilling to scratch is one answer; keeping the
             // program order (scheduling stretches live ranges) and giving hot values the low
@@ -769,6 +779,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { lazy: !b.lazy, ..b });
             nb.push(Variant { alg: b.alg ^ 1, ..b });
             nb.push(Variant { alg: b.alg ^ 2, ..b });
+            nb.push(Variant { alg: b.alg ^ 4, ..b });
             nb.push(Variant { sccp: !b.sccp, ..b });
             nb.push(Variant { tree: !b.tree, ..b });
             for t in [0u8, 1, 2] {
