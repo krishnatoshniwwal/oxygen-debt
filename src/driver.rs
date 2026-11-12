@@ -482,7 +482,6 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         };
         // loop algebra (algebra.rs): tried first, because a deleted loop makes most other settings moot
         let b = state.0;
-        consider(&mut s, &mut state, Variant { alg: 1, lazy: true, ..b });
         consider(&mut s, &mut state, Variant { alg: 1, ..b });
         if over_k(&s, &state.0) {
             // More names than registers. Spilling to scratch is one answer; keeping the
