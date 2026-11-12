@@ -2,7 +2,8 @@
 
 `kopt` is written in Rust (stable, standard library only). No compiler framework and no
 solver is used. It was first written in Python; that version is kept in `pyref/` as a
-reference, and the Rust version produces byte-identical output on all practice programs.
+reference. The first Rust version produced byte-identical output on all practice programs;
+the Rust version has since moved on (candidate choice, section 2 step 9), so the two now differ.
 
 **Code ported from the kit.** `src/kir.rs` is a Rust port of the kit's `kirlib.py`: the
 parser, the machine file reader, the interpreter and the timing model, plus the generator
@@ -39,7 +40,8 @@ Optimizations
 * Branch folding, unreachable-block removal, jump threading, block merging.
 * Dead-code removal that keeps everything that can trap or is visible.
 * Range-based rewrites: `div`/`mod` by a power of two becomes `shr`/`and` **only when
-  the value is proven non-negative**; masks that do nothing are removed; comparisons and
+  the value is proven non-negative**; `mod` by a constant m of a value proven in [0, 2m)
+  becomes a conditional subtract; masks that do nothing are removed; comparisons and
   branches that the ranges decide are folded.
 * Memory: a load of an address whose content is already known is removed (redundant
   loads, store-to-load forwarding); a store that writes what is already there is removed;
@@ -50,6 +52,9 @@ Optimizations
   keeps its exit test); loop rotation by copying the loop test to the end of the body.
 * Fused instructions `mac` and `addsh`, and `shl` instead of `mul`, chosen from the
   machine file.
+* Speculation inside loops: long-latency work (`div`, `mod`, `mul`, `mac`, `load`) of a block is
+  moved above the branch of its only predecessor, so the scheduler can overlap the
+  latencies of several unrolled iterations.
 * Instruction scheduling inside a block for the in-order machine.
 * Register colouring with copy coalescing, so that few register names are used.
 * Spilling to the scratch region when there are still more names than hardware registers.
@@ -58,7 +63,8 @@ Optimizations
 
 Missing or only half done
 
-* No strength reduction of induction variables (`i*c` kept up to date by adding).
+* Strength reduction of induction variables only for `i + k` (a new induction variable,
+  and the exit test moved onto it); `i*c` is not kept up to date by adding.
 * No reassociation of long sums (for example to shorten the chain through an accumulator).
 * No partial redundancy elimination: a value computed on only one path into a join is
   not reused after the join.
@@ -68,7 +74,8 @@ Missing or only half done
 * Signed `div`/`mod` by a constant stays a division when the value may be negative.
 * Load/store facts are not carried through a join as a new phi.
 * Loops with two entrances get no loop optimizations.
-* Scheduling works one block at a time and does not move work across branches.
+* Scheduling works one block at a time. Only the speculation pass moves work across
+  branches, and only inside loops, only upwards into a block's single predecessor.
 
 ## 2. Pass order
 
@@ -79,8 +86,8 @@ Missing or only half done
    passes see one simple form.
 3. **SSA optimization round**, repeated until nothing changes (at most a few times):
    simplify + value numbering + branch folding; CFG clean-up; dead code;
-   value ranges -> range-based rewrites; memory pass; loop-invariant code motion;
-   if-conversion. The cheap clean-ups run first because every later pass sees less code,
+   lazy modular reduction (optional); value ranges -> range-based rewrites; memory pass;
+   loop-invariant code motion; induction-variable rewrite (optional); if-conversion. The cheap clean-ups run first because every later pass sees less code,
    and they run again after each bigger pass because that pass exposes new chances.
 4. **Peeling.** Loops whose exit test depends only on constants are run "on paper" to
    get the trip count. The function leaves SSA, the loop body is copied that many times
@@ -91,16 +98,27 @@ Missing or only half done
    lets the simplifier merge `i+1+1` into `i+2`, so the copies do not wait for each other.
 6. **Lowering**: last dead-code pass with range information; pick `mac`, `addsh`, `shl`.
    This is late because the simple `mul`/`add` form is easier for all other passes.
-7. **Scheduling** inside each block. After lowering, because it needs the real latencies.
+7. **Speculation** (optional, chosen by the search), then **scheduling** inside each
+   block. After lowering, because they need the real latencies.
 8. **Out of SSA and registers**: phis become copies through fresh names; colouring with
    coalescing removes almost all of them; optional spilling to scratch memory.
 9. **Back end and choice**: final jump clean-up; copy small blocks into their
    predecessors (this rotates loops); optional late unrolling; block order.
-   kopt builds several candidates (different settings of steps 3 to 9), runs each one
-   on a few made-up inputs with the kit's timing model, and keeps the fastest. That
-   candidate is then compared with the input program on more made-up inputs (edge
-   values, values that trap). If it differs anywhere it is thrown away and the next
-   best is tried. If none is left, the input is written unchanged.
+   kopt builds several candidates (different settings of steps 3 to 9: a greedy walk that
+   changes one setting at a time and keeps a change when it is faster, then a refinement
+   round that tries every single change of the final setting not measured yet, because
+   the greedy walk depends on the order of its steps), runs each one
+   on up to 8 made-up *timing inputs* with the kit's timing model, and keeps the one with
+   the fewest total cycles. The timing inputs are shaped like the kit's sample `.in` files:
+   arguments mostly small (2..20, 3..12, 8..47, 16..128), some larger (50..300,
+   100..2000), now and then a full 32-bit value or a small negative number; memory filled
+   with small values. Cycles are added up as absolute numbers, not ratios, because the
+   judges rank by Average Cycles (total cycles / programs). A candidate is only written if
+   its total is **strictly below the input program's** on the same inputs; otherwise the
+   input is written unchanged (do no harm). The chosen candidate is then compared with the
+   input program on more made-up inputs (edge values, values that trap). If it differs
+   anywhere it is thrown away and the next best is tried. If none is left, the input is
+   written unchanged.
 
 ## 3. Each pass
 
@@ -137,7 +155,10 @@ numbers. The pass walks the dominator tree again and again until nothing changes
 intervals that keep growing are widened (to 2^31-1, then to the full range) so it stops
 after a few walks; two more walks shrink the result again. In a block that can only be
 reached through one side of a branch, the branch condition (`lt`, `eq`, or the value
-itself) narrows the operands. Signed compares only narrow a value that is already known
+itself) narrows the operands. The first widening of an upper bound stops at the next
+*threshold* (m - 1 for every `mod` by a constant m in the program) before jumping to
+2^31-1, so a running value that is reduced `% m` every step is proven to stay in
+[0, m - 1]. Signed compares only narrow a value that is already known
 to be non-negative. Time: a small number of linear walks; if it has not settled after 14
 walks kopt uses no range information at all. Safe because the final state is checked by
 one more full walk that changes nothing: every interval then contains everything its
@@ -146,10 +167,16 @@ defining instruction can produce.
 **Range-based rewrites** (`passes2.range_simplify`). Linear. `x / 2^k -> x >> k` and
 `x % 2^k -> x & (2^k-1)` need `x <= 2^31-1` from the ranges; `x % y -> x` needs
 `0 <= x < y`. Without that proof nothing is changed, so negative values are never
-shifted.
+shifted. With a constant `m` and `0 <= x < 2m` proven (for example a running sum that is
+reduced every step, as in Adler-32), `x % m` becomes `t = x - m; c = x < m; select c, x, t`:
+three ALU instructions instead of a division-latency instruction on the loop-carried chain.
+This is exact because `x - m` is then the remainder when `x >= m`, and every value involved
+is non-negative and below 2^31 (signed `lt` and signed `mod` agree with unsigned ones). It
+needs one more temporary, so the search can switch it off.
 
 **Memory pass** (`passes2.mem_pass`). A forward data-flow of facts "the word at address A
-holds value V", created by loads and stores. A store removes every fact whose address it
+holds value V", created by loads and stores (in the candidate with load reuse off, only by
+stores: a second load of the same word is kept). A store removes every fact whose address it
 may write. At a join only facts that agree on all incoming paths survive. Time: linear
 per round, at most 10 rounds; if it does not settle, only facts inside one block are
 used. Safe because a fact for address A exists only if a load or store of exactly that
@@ -164,6 +191,33 @@ loop. Time: linear in the loop sizes. Safe because only instructions that cannot
 move: plain arithmetic; `div`/`mod` whose divisor is proven non-zero **at the new
 place**; `load` whose address is proven valid at the new place and that no store in the
 loop may write. A guarded division therefore stays behind its guard.
+
+**Lazy modular reduction** (`passes3.lazy_mod`, optional, chosen by the search; runs at
+the start of each SSA round). In a loop entered from one block, with a counter
+`i = phi(i0, i + 1)` (i0 a constant >= 0) tested at the header by `br (lt i, n), body,
+exit`, a running value `s = phi(s0, (s + t) % m)` (m a constant) stops being reduced inside
+the loop when: `s` is used in the loop only by that add, the add only by the `%`, the `%`
+only by the phi, and after the loop `s` is used only by ordinary instructions; the add
+runs at most once per iteration (not in an inner loop); and with T = the largest t,
+S0 = the largest s0 and N = (largest n) - i0 (the most iterations), S0 + N*T < 2^31 is
+proven by the value ranges. The loop then carries the plain sum, and each use after the
+loop reads `s % m` (one `mod` inserted before it). Example: the Adler-32 and Fletcher
+checksums, and `sum_cubes_mod`. Time: linear. Safe because every unreduced value is then
+in [0, 2^31), where KIR's signed `%` is the ordinary remainder, and
+((s0 + t1) % m + t2) % m ... equals (s0 + t1 + t2 + ...) % m for non-negative numbers.
+
+**Induction-variable rewrite** (`passes3.iv_rewrite`, optional, chosen by the search; runs
+in the SSA round after loop-invariant code motion). For a loop entered from one block `p0`
+with an induction variable `i = phi(i0, i + c)` (the same `i + c` on every back edge, c a
+constant), each `a = i + k` in the loop (k a constant, at most 4 different k) is replaced
+by a new induction variable `ai = phi(i0 + k, ai + c)`, with `i0 + k` computed at the end
+of `p0`. Then an exit test `lt i, n` (or `lt n, i`) with `n` defined outside the loop
+becomes `lt ai, n + k`, with `n + k` computed in `p0`. When `i` has no use left, dead-code
+removal deletes it. Typical effect: an array loop steps the address directly and no
+longer computes `base + i` every iteration. Time: linear in the loop sizes. Safe because
+`add` is arithmetic modulo 2^32, so `ai == i + k` holds in every iteration for any values;
+the comparison is rewritten only when the ranges prove `i + k` and `n + k` both stay in
+[0, 2^31), where adding k to both sides of a signed `<` does not change its result.
 
 **If-conversion** (`passes3.ifconv`). Looks for a branch around one or two small blocks
 that rejoin. The blocks' instructions are moved up and each phi at the join becomes a
@@ -185,6 +239,20 @@ ring, every copy keeps all its exit tests. Correct for any loop.
 `addsh`, when the multiplication has no other use and sits in the same block. Linear.
 These are the definitions of the fused instructions.
 
+**Speculation** (`passes3.speculate`). In SSA form, for a block `s` inside a loop whose only
+predecessor `p` (in the same loop) ends in a two-way branch: an instruction of `s` moves to
+the end of `p` (before the branch) when it is a `div`, `mod`, `mul`, `mac` or `load`, or
+computes an operand of one; when it is pure, or is a `div`/`mod` whose divisor the value
+ranges prove non-zero *at p*, or is a `load` whose address the ranges prove below 4096 *at
+p* and that no store or volatile operation of `s` comes before (it then still runs after
+exactly the memory operations it ran after before); when every operand is defined outside
+`s`; and when its value does not
+feed a phi (moving such a value above an exit would make the exit need the old value too).
+One sweep moves work up by one block; the search tries 1 and 8 sweeps. Time: linear per
+sweep. Safe because the moved instruction has no effect and cannot trap, so running it on
+the path that leaves the loop changes nothing that can be seen; every use of its value is
+in `s` or below, and `p` dominates all of them (it is the only way into `s`).
+
 **Scheduling** (`passes3.schedule`). For every block a dependency graph is built and the
 instructions are re-ordered greedily: among the instructions whose inputs are done, take
 the one that can start earliest, and among those the one with the longest chain of work
@@ -201,6 +269,24 @@ built (two names interfere if one is written while the other is live), copies wh
 sides do not interfere are merged, and the graph is coloured greedily in
 smallest-degree-last order. All parameters interfere with each other. Time: n times the
 number of live names.
+
+**Hot colouring** (`ssa.colour_hot`, optional, chosen by the search). If the normal
+colouring still needs more names than the machine has registers, the hardware register
+file works like an LRU cache: what costs is touching many different names inside a hot
+loop. In this mode the values are coloured in order of their frequency-weighted number of
+touches (loop depth counts 8x per level), each taking the lowest colour its neighbours
+leave free, so the values of the hottest loops share the lowest names and stay resident.
+Time: one sort and one greedy pass. Safe for the same reason as any colouring: two values
+that are alive at the same time never get the same name.
+
+**Forced spill of one hot-loop value** (`ssa.allocate` with `force = n`, optional, chosen
+by the search). If more names than registers are needed, the values that are alive on
+entry to the hottest blocks are ranked by how often they are touched (fewest first), and
+the n-th one is kept in a scratch word (store after each write, load before each read)
+before the normal colouring. Inside a hot loop one load can be cheaper than the register
+misses caused by one name too many (for example a loop limit read once per iteration).
+The search tries n = 1, 2, 3 and keeps whichever measures fastest. Same safety condition
+and rewriting as the spilling below.
 
 **Spilling** (`ssa._pick_spills`, `_rewrite_spills`). If there are more names than
 hardware registers, the cheapest names (few uses, outside loops) are kept in scratch
@@ -230,8 +316,12 @@ The machine file is read with the kit's `load_machine`. It is used in these plac
   `icache_penalty`: the search measures every candidate with the exact timing model for
   this machine and keeps the fastest. The candidates differ in: unroll factor (1, 2, 4,
   8), if-conversion size (off, 2, 4, 8, 24), scheduling on/off, `mac` on/off, peeling
-  (off, within the cache, beyond the cache), spilling on/off, tail-copy size, late
-  unrolling, and a loose or tight code-size budget. So a setting that is only good for
+  (off, within the cache, beyond the cache), spilling on/off, reuse of loaded values on/off
+  (reloading a word can beat keeping many loaded values alive when registers are few),
+  speculation (off, 1 or 8 sweeps), conditional subtract for `mod` on/off, hot colouring
+  on/off and forced spill of one hot-loop value (only when there are more names than
+  registers), the induction-variable rewrite on/off, lazy modular reduction on/off,
+  tail-copy size, late unrolling, and a loose or tight code-size budget. So a setting that is only good for
   the default numbers is not chosen on a machine where it loses.
 
 ## 5. Keeping the behaviour
@@ -267,14 +357,20 @@ kopt's own inputs. Without a profile only the static estimate is used.
 
 ## 7. Known problems
 
-* The search measures candidates on made-up inputs (small arguments, small memory
-  values). If the judges' inputs are very different, the chosen setting may not be the
-  best one for them.
-* Very large programs (more than 6000 instructions) get one light pass over the pipeline
-  with no search: no peeling, no if-conversion, no unrolling. On our test programs of
-  about 100,000 instructions kopt needs 1 to 4 seconds on a laptop. If the interference
-  graph would be extremely large, kopt writes the input unchanged instead of running out
-  of time.
+* The search measures candidates on made-up inputs shaped like the sample `.in` files
+  (the organisers say hidden inputs follow the samples). If the judges' inputs are very
+  different, the chosen setting may not be the best one for them. Inputs that run very
+  long are skipped for timing (step budget), so very long runs are under-represented.
+* Large programs (more than 6000 instructions) get the full pipeline without peeling,
+  at most 2 rounds of the SSA optimizations, and only a few whole-program candidates
+  (load reuse off, spilling, if-conversion off) instead of the general search; above
+  150,000 instructions only the first candidate. Programs above 300,000 instructions get
+  one light pass with no search. On generated programs of
+  about 100,000 instructions (`tests/gen_large.py`: a long polynomial, unrolled CRC
+  steps, mixed straight-line work, thousands of small loops) kopt needs 0.8 to 5 seconds
+  on a laptop; the loop-heavy one is the slowest, because the value-range analysis is run
+  several times per candidate. If the interference graph would be extremely large, kopt
+  writes the input unchanged instead of running out of time.
 * With more live values than registers the result is still far from the best possible:
   spilled values are loaded right before each use, and loops are never split.
 * The optimizations listed as missing in section 1.

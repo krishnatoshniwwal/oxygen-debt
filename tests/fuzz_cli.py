@@ -2,9 +2,9 @@
 """Fuzz the Rust kopt through its command line.
 
 Uses the random-program generator of the Python reference (pyref/tests/fuzz.py). For each
-program: run ./kopt, check that the output behaves like the input on many inputs, and compare
-the output text with the Python reference's output (they should be identical).
-Usage: python3 tests/fuzz_cli.py [--n 300] [--seed 1] [--jobs 10]
+program: run ./kopt and check that the output behaves like the input on many inputs. With
+--ref, also compare the output text with the Python reference's output.
+Usage: python3 tests/fuzz_cli.py [--n 300] [--seed 1] [--jobs 10] [--ref]
 """
 import argparse, os, random, subprocess, sys
 from concurrent.futures import ProcessPoolExecutor
@@ -19,7 +19,7 @@ import fuzz  # noqa: E402
 
 
 def one(args):
-    seed, it, inputs = args
+    seed, it, inputs, ref = args
     rnd = random.Random(seed * 1000003 + it)
     mc = fuzz.random_machine(rnd)
     g = fuzz.Gen(rnd)
@@ -62,6 +62,8 @@ def one(args):
         if diff:
             res['problems'].append('MISMATCH input #%d: %s' % (k, diff))
             break
+    if not ref:
+        return res
     try:
         q = subprocess.run([sys.executable, os.path.join(ROOT, 'pyref', 'kopt'), base + '.kir', '--machine', base + '.cfg',
                             '-o', base + '.py'], capture_output=True, text=True, timeout=30)
@@ -78,9 +80,11 @@ def main():
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--jobs', type=int, default=10)
     ap.add_argument('--inputs', type=int, default=70)
+    ap.add_argument('--ref', action='store_true',
+                    help='also compare the output text with the Python reference (they differ since the Rust version moved on)')
     o = ap.parse_args()
     with ProcessPoolExecutor(o.jobs) as ex:
-        results = list(ex.map(one, [(o.seed, i, o.inputs) for i in range(o.n)], chunksize=2))
+        results = list(ex.map(one, [(o.seed, i, o.inputs, o.ref) for i in range(o.n)], chunksize=2))
     bad = [r for r in results if r['problems']]
     for r in bad[:25]:
         print('iteration %d (%s): %s' % (r['it'], r['base'], '; '.join(r['problems'])))

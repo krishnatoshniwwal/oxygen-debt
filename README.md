@@ -51,12 +51,14 @@ PATH-TO-KIT/ksim OUT.kir --machine MACHINE.cfg --input IN.in
 | `src/passes.rs` | Simplification, constant folding, value numbering, dead code, CFG clean-up. |
 | `src/ranges.rs` | Value-range analysis (proves "cannot trap" and "not negative"). |
 | `src/passes2.rs` | Range-based rewrites, memory optimizations, loop-invariant code motion, fused instructions. |
-| `src/passes3.rs` | If-conversion, loop peeling, instruction scheduling. |
+| `src/passes3.rs` | If-conversion, loop peeling, speculation inside loops, instruction scheduling. |
 | `src/backend.rs` | Final clean-up, block order, code copying (loop rotation and unrolling). |
 | `src/evalsim.rs` | kopt's own measurement and self-check of candidate outputs. |
 | `tests/run_cli.py` | Runs `./kopt` on every practice program and machine with the kit's `kvalidate`, twice. |
-| `tests/compare.py` | Compares the Rust output with the Python reference on every practice program. |
+| `tests/compare.py` | Compares the Rust output with the Python reference on every practice program (they no longer match exactly: the Rust version has moved on). |
 | `tests/fuzz_cli.py` | Random-program stress test through the command line. |
+| `tests/gen_large.py` | Generates ~100,000-instruction programs to check kopt's time limit on very large inputs. |
+| `tests/measure.py`, `tests/compare_runs.py` | Cycle counts of a kopt binary on every practice program and machine (sample input plus 3 perturbed variants), and an A/B comparison of two such runs. |
 | `pyref/` | The original Python implementation, kept as a reference for the tests. |
 
 ## Tests
@@ -68,4 +70,9 @@ part of this repository), or pass `--kit PATH`. They need Python 3.
 python3 tests/run_cli.py              # command line + kvalidate, run twice (determinism)
 python3 tests/compare.py              # Rust against the Python reference, all programs
 python3 tests/fuzz_cli.py --n 500     # random programs on random machines
+python3 tests/gen_large.py /tmp/large # then run ./kopt on /tmp/large/*.kir and time it
+python3 tests/measure.py target/release/kopt_bin /tmp/a.json   # cycles; then after a change:
+python3 tests/compare_runs.py /tmp/a.json /tmp/b.json         # A/B per machine and per case
 ```
+
+`KOPT_PROF=1 ./kopt ...` prints how long each step took (the output file is the same).

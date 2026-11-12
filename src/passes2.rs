@@ -15,7 +15,8 @@ fn bit_length(c: i64) -> i64 {
 
 /// Use value ranges: fold results that are known constants, drop masks that do nothing,
 /// turn div / mod of non-negative values by powers of two into shr / and, fold branches.
-pub fn range_simplify(f: &mut Func, rng: &Ranges) -> bool {
+/// csub=true: `x % m` (m constant) with 0 <= x < 2m proven becomes a conditional subtract.
+pub fn range_simplify(f: &mut Func, rng: &Ranges, csub: bool) -> bool {
     if !rng.ok {
         return false;
     }
@@ -90,6 +91,20 @@ pub fn range_simplify(f: &mut Func, rng: &Ranges) -> bool {
                             ins.a = vec![ins.a[0], lit(c - 1)];
                         }
                         changed = true;
+                    } else if csub && op == Op::Mod && ins.a[1] < 0 {
+                        // 0 <= x < 2m (proven): x % m == (x < m ? x : x - m).
+                        // Three ALU ops instead of a div-latency op on the chain.
+                        let m = !ins.a[1];
+                        if m >= 1 && 2 * m - 1 <= SMAX && rx.1 <= 2 * m - 1 {
+                            let x = ins.a[0];
+                            let t1 = f.new_val();
+                            let t2 = f.new_val();
+                            out.push(Instr::new(Op::Sub, t1, vec![x, lit(m)], vec![]));
+                            out.push(Instr::new(Op::Lt, t2, vec![x, lit(m)], vec![]));
+                            out.push(Instr::new(Op::Select, d, vec![t2, x, t1], vec![]));
+                            changed = true;
+                            continue;
+                        }
                     }
                 }
             } else if op == Op::Select {
@@ -133,6 +148,7 @@ pub fn range_simplify(f: &mut Func, rng: &Ranges) -> bool {
         f.arena[b].ins = out;
     }
     if any_rep {
+        rep.resize(f.nval.max(0) as usize + 1, NOREP); // values made above have no replacement
         apply_rep(f, &rep);
     }
     changed
@@ -191,7 +207,10 @@ fn facts_eq(a: &Facts, b: &Facts) -> bool {
 }
 
 /// Walk block `ins` with `state`; with apply=true also rewrite it (returns the new list).
-fn mem_transfer(ins_list: &[Instr], b: usize, state: &mut Facts, mi: &MemInfo, rng: &Ranges, rep: &mut Vec<i64>, apply: bool) -> (bool, Option<Vec<Instr>>) {
+/// fwd_loads=false: a load does not create a fact, so a later load of the same word is kept
+/// (only values written by stores are forwarded). Reloading can be cheaper than keeping many
+/// loaded values alive when there are few registers.
+fn mem_transfer(ins_list: &[Instr], b: usize, state: &mut Facts, mi: &MemInfo, rng: &Ranges, rep: &mut Vec<i64>, apply: bool, fwd_loads: bool) -> (bool, Option<Vec<Instr>>) {
     let mut out: Vec<Instr> = Vec::new();
     let mut changed = false;
     for ins in ins_list {
@@ -207,10 +226,12 @@ fn mem_transfer(ins_list: &[Instr], b: usize, state: &mut Facts, mi: &MemInfo, r
                         }
                     }
                     None => {
-                        if state.len() >= MAXFACTS {
-                            state.remove(0);
+                        if fwd_loads {
+                            if state.len() >= MAXFACTS {
+                                state.remove(0);
+                            }
+                            state.push((k, (ins.d, rng.get(ins.a[0], b))));
                         }
-                        state.push((k, (ins.d, rng.get(ins.a[0], b))));
                     }
                 }
             }
@@ -244,7 +265,7 @@ fn mem_transfer(ins_list: &[Instr], b: usize, state: &mut Facts, mi: &MemInfo, r
 }
 
 /// Forward data-flow of 'memory word at address A holds value V' facts.
-pub fn mem_pass(f: &mut Func, rng: &Ranges) -> bool {
+pub fn mem_pass(f: &mut Func, rng: &Ranges, fwd_loads: bool) -> bool {
     let rpo = analyze(f);
     let has_mem = rpo.iter().any(|&b| f.arena[b].ins.iter().any(|i| i.op == Op::Load || i.op == Op::Store));
     if !has_mem {
@@ -296,7 +317,7 @@ pub fn mem_pass(f: &mut Func, rng: &Ranges) -> bool {
                 st = cur.unwrap_or_default();
             }
             ins_st[b] = st.clone();
-            mem_transfer(&f.arena[b].ins, b, &mut st, &mi, rng, &mut dummy, false);
+            mem_transfer(&f.arena[b].ins, b, &mut st, &mi, rng, &mut dummy, false, fwd_loads);
             let same = match &outs[b] {
                 Some(o) => facts_eq(o, &st),
                 None => false,
@@ -316,7 +337,7 @@ pub fn mem_pass(f: &mut Func, rng: &Ranges) -> bool {
     let mut changed = false;
     for &b in &rpo {
         let mut st: Facts = if converged { ins_st[b].clone() } else { Vec::new() };
-        let (ch, out) = mem_transfer(&f.arena[b].ins, b, &mut st, &mi, rng, &mut rep, true);
+        let (ch, out) = mem_transfer(&f.arena[b].ins, b, &mut st, &mi, rng, &mut rep, true, fwd_loads);
         if ch {
             changed = true;
         }

@@ -20,11 +20,36 @@ pub struct Variant {
     pub sched: bool,
     pub mac: bool,
     pub spill: bool, // keep values in scratch memory when registers run out
+    pub fwd: bool,   // reuse a loaded value for a later load of the same word (else reload)
+    pub spec: u8,    // speculation inside loops: 0 = off, else the number of sweeps (blocks moved up)
+    pub hot: bool,   // with more names than registers: hottest values get the lowest names
+    pub csub: bool,  // x % m with 0 <= x < 2m proven -> conditional subtract
+    pub spill1: u8,  // >0: keep the n-th least-touched value live through the hottest blocks in scratch
+    pub iv: bool,    // induction-variable rewrite of i + k in loops (and of the exit test)
+    pub lazy: bool,  // lazy modular reduction of running sums in counted loops
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false }
+    }
+}
+
+/// Developer timing: with the environment variable KOPT_PROF set, print how long the step
+/// since the last call took. Without it the clock is never read, and the output file never
+/// depends on it either way.
+fn prof_start() -> Option<std::time::Instant> {
+    if std::env::var_os("KOPT_PROF").is_some() {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    }
+}
+
+fn prof(label: &str, t0: &mut Option<std::time::Instant>) {
+    if let Some(t) = t0 {
+        eprintln!("kopt-prof {:>8.3}s {}", t.elapsed().as_secs_f64(), label);
+        *t0 = Some(std::time::Instant::now());
     }
 }
 
@@ -52,35 +77,60 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
             }
         }
     };
+    let mut t = prof_start();
     scalar(f);
+    prof("  phase_a scalar", &mut t);
     if light {
         let rng = Ranges::new(f, 6);
-        passes2::range_simplify(f, &rng);
-        passes2::mem_pass(f, &rng);
+        passes2::range_simplify(f, &rng, v.csub);
+        passes2::mem_pass(f, &rng, v.fwd);
         passes2::licm(f, &rng);
         passes::scalar_pass(f);
         passes::cleanup_cfg(f);
         return;
     }
-    for _ in 0..4 {
+    // Large programs: at most 2 rounds (the value-range analysis is the costly part of a round).
+    let rounds = if f.count_instrs() > MID { 2 } else { 4 };
+    for _ in 0..rounds {
+        let mut lz = false;
+        if v.lazy {
+            let rng = Ranges::new(f, 14);
+            if passes3::lazy_mod(f, &rng) {
+                chk(f, "lazy_mod");
+                scalar(f);
+                lz = true;
+            }
+        }
         let mut rng = Ranges::new(f, 14);
-        let c1 = passes2::range_simplify(f, &rng);
+        prof("  ranges", &mut t);
+        let c1 = passes2::range_simplify(f, &rng, v.csub);
         chk(f, "range_simplify");
         if c1 {
             scalar(f);
             rng = Ranges::new(f, 14);
         }
-        let c2 = passes2::mem_pass(f, &rng);
+        prof("  range_simplify (+scalar, ranges)", &mut t);
+        let c2 = passes2::mem_pass(f, &rng, v.fwd);
         chk(f, "mem_pass");
         if c2 {
             scalar(f);
             rng = Ranges::new(f, 14);
         }
-        let c3 = passes2::licm(f, &rng);
+        prof("  mem_pass (+scalar, ranges)", &mut t);
+        let mut c3 = passes2::licm(f, &rng);
         chk(f, "licm");
         if c3 {
             scalar(f);
         }
+        if v.iv {
+            let rng = Ranges::new(f, 14);
+            if passes3::iv_rewrite(f, &rng) {
+                chk(f, "iv_rewrite");
+                scalar(f);
+                c3 = true;
+            }
+        }
+        prof("  licm (+scalar)", &mut t);
         let mut c4 = false;
         if v.ifc > 0 {
             let rng = Ranges::new(f, 14);
@@ -90,7 +140,8 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
                 scalar(f);
             }
         }
-        if !(c1 || c2 || c3 || c4) {
+        prof("  ifconv (+ranges, scalar)", &mut t);
+        if !(lz || c1 || c2 || c3 || c4) {
             break;
         }
     }
@@ -98,11 +149,14 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 
 /// Everything up to (not including) the choice of block order and final code copying.
 fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func, String> {
+    let mut t = prof_start();
     let mut f = ir::from_program(prog);
     let ic = mc.icache_size;
     ssa::build_ssa(&mut f);
     chk(&mut f, "build_ssa");
+    prof("build_ssa", &mut t);
     phase_a(&mut f, v, light);
+    prof("phase_a total", &mut t);
     if v.peel != 0 {
         let budget = if v.peel == 1 { ic } else { (4 * ic).max(256) } as usize;
         for _ in 0..4 {
@@ -118,6 +172,7 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
                 break;
             }
         }
+        prof("peeling (+phase_a)", &mut t);
     }
     if v.unroll > 1 {
         ssa::destruct_ssa(&mut f);
@@ -144,13 +199,19 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
             }
         }
     }
+    prof("unroll, ranges, dce", &mut t);
     passes2::lower(&mut f, mc, v.mac);
     if v.sched {
         if !light {
             rng = Ranges::new(&mut f, 14);
         }
+        if v.spec > 0 {
+            passes3::speculate(&mut f, &rng, 64, v.spec as usize);
+            chk(&mut f, "speculate");
+        }
         passes3::schedule(&mut f, mc, &rng);
     }
+    prof("lower, schedule", &mut t);
     ir::analyze(&mut f);
     for bi in 0..f.blocks.len() {
         let b = f.blocks[bi];
@@ -158,9 +219,13 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
         f.arena[b].freq = 8f64.powi(d).min(1e9);
     }
     ssa::destruct_ssa(&mut f);
+    prof("destruct_ssa", &mut t);
     let k = mc.registers as usize;
-    f.nreg = ssa::allocate(&mut f, Some(k), v.spill && scratch_ok)?;
+    let force = if scratch_ok { v.spill1 as usize } else { 0 };
+    f.nreg = ssa::allocate(&mut f, Some(k), v.spill && scratch_ok, v.hot, force)?;
+    prof("allocate", &mut t);
     backend::final_cleanup(&mut f);
+    prof("final_cleanup", &mut t);
     Ok(f)
 }
 
@@ -181,7 +246,11 @@ fn finish(f: &mut Func, mc: &Machine, profile: Option<&backend::Profile>, maxdup
     ir::to_text(f)
 }
 
-const BIG: usize = 6000; // programs with more instructions than this get the light pipeline
+// Programs with more than MID instructions skip the general search and get only a few
+// whole-program candidates (each costs about one pipeline run: ~0.6 s at 100k instructions).
+// Programs with more than BIG instructions get the light pipeline (one round, no search).
+const MID: usize = 6000;
+const BIG: usize = 300_000;
 
 // (maxdup, unroll factor, loose code-size budget)
 const BACKENDS: [(usize, usize, bool); 9] = [
@@ -266,7 +335,9 @@ impl<'a> Search<'a> {
         self.spent += f.count_instrs() / 3;
         let (prog, mc, profile, rf) = (self.prog, self.mc, self.profile, self.rf);
         let r = catch_unwind(AssertUnwindSafe(|| -> Result<(String, Option<(Compiled, usize, f64)>, f64), String> {
+            let mut t = prof_start();
             let out = finish(&mut f, mc, profile, be.0, be.1, be.2);
+            prof("finish (tail copy, unroll, layout, text)", &mut t);
             if let Some(&s) = self.seen.get(&out) {
                 return Ok((out, None, s));
             }
@@ -276,9 +347,28 @@ impl<'a> Search<'a> {
                 return Err("parameter count changed".into());
             }
             let cp = compile_program(&newprog);
-            let sc = rf.score(&cp).ok_or_else(|| "behaves differently on a timing input".to_string())?;
+            let sc = match rf.score(&cp) {
+                Some(sc) => sc,
+                None => {
+                    // developer aid: KOPT_DUMP_BAD=FILE writes the rejected candidate there
+                    if let Some(p) = std::env::var_os("KOPT_DUMP_BAD") {
+                        let _ = std::fs::write(p, &out);
+                    }
+                    return Err("behaves differently on a timing input".to_string());
+                }
+            };
+            prof("parse + score", &mut t);
             Ok((out, Some((cp, newprog.instrs.len(), sc)), sc))
         }));
+        if std::env::var_os("KOPT_PROF").is_some() {
+            if let Ok(Ok((_, _, sc))) = &r {
+                eprintln!("kopt-cand #{} score {:>10.0} spent {:>6} {:?} {:?}", self.n, sc, self.spent, v, be);
+            }
+        }
+        // developer aid: KOPT_DUMP_ALL=DIR writes every candidate as DIR/cand_N.kir
+        if let (Some(d), Ok(Ok((out, _, _)))) = (std::env::var_os("KOPT_DUMP_ALL"), &r) {
+            let _ = std::fs::write(std::path::Path::new(&d).join(format!("cand_{}.kir", self.n)), out);
+        }
         match r {
             Ok(Ok((out, Some((cp, size, sc)), _))) => {
                 self.seen.insert(out.clone(), sc);
@@ -306,10 +396,12 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     let prog = parse_program(text)?; // an invalid input is an error
     let profile = profile_text.map(backend::parse_profile);
     let size = prog.instrs.len();
+    let mut t = prof_start();
     let rf = match catch_unwind(AssertUnwindSafe(|| Reference::new(&prog, mc, size))) {
         Ok(r) => r,
         Err(_) => return Ok(text.to_string()),
     };
+    prof("reference runs", &mut t);
     let mut s = Search {
         prog: &prog,
         mc,
@@ -324,7 +416,13 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         spent: 0,
     };
     let b0 = BACKENDS[0];
-    let v0 = if size > BIG { Variant { peel: 0, ifc: 0, ..Variant::default() } } else { Variant::default() };
+    let v0 = if size > BIG {
+        Variant { peel: 0, ifc: 0, ..Variant::default() }
+    } else if size > MID {
+        Variant { peel: 0, ..Variant::default() } // peeling re-runs phase_a: too slow here
+    } else {
+        Variant::default()
+    };
     let mut state: (Variant, Option<f64>) = (v0, None);
     state.1 = s.run(&state.0, b0);
 
@@ -340,7 +438,32 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
     }
 
-    if size <= BIG {
+    // (above 150k instructions only the first candidate: time grows faster than linearly)
+    if size > MID && size <= 150_000 {
+        // Large programs: no general search, but the settings that matter most for long
+        // straight-line code: reload instead of keeping loaded values alive (register
+        // pressure), spilling to scratch, and no if-conversion.
+        let over_k = match s.mids.get(&state.0) {
+            Some(Some(f0)) => f0.nreg > mc.registers,
+            _ => false,
+        };
+        let b = state.0;
+        let mut tries = vec![Variant { fwd: false, ..b }];
+        if over_k {
+            tries.push(Variant { spill: true, ..b });
+            tries.push(Variant { hot: true, ..b });
+        }
+        tries.push(Variant { ifc: 0, ..b });
+        for v in tries {
+            let sc = s.run(&v, b0);
+            if let Some(sc) = sc {
+                if state.1.map_or(true, |x| sc < x - 1e-9) {
+                    state = (v, Some(sc));
+                }
+            }
+        }
+    }
+    if size <= MID {
         let over_k = |s: &Search, v: &Variant| -> bool {
             match s.mids.get(v) {
                 Some(Some(f0)) => f0.nreg > mc.registers,
@@ -348,14 +471,41 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             }
         };
         if over_k(&s, &state.0) {
-            let v = Variant { spill: true, ..state.0 };
-            consider(&mut s, &mut state, v);
+            // More names than registers. Spilling to scratch is one answer; keeping the
+            // program order (scheduling stretches live ranges) and giving hot values the low
+            // names (LRU register file) are others. Try them before the search settles.
+            let b = state.0;
+            for v in [
+                Variant { spill: true, ..b },
+                Variant { sched: false, ..b },
+                Variant { hot: true, ..b },
+                Variant { sched: false, hot: true, ..b },
+                Variant { spill1: 1, ..b },
+                Variant { spill1: 2, ..b },
+                Variant { spill1: 3, ..b },
+            ] {
+                consider(&mut s, &mut state, v);
+            }
         }
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
             consider(&mut s, &mut state, v);
+        }
+        // speculation pays mostly on unrolled loops; if it is adopted, try the unroll
+        // factors again with it
+        for sp in [1u8, 8] {
+            let v = Variant { spec: sp, ..state.0 };
+            consider(&mut s, &mut state, v);
+        }
+        if state.0.spec > 0 {
+            for u in [2, 4, 8] {
+                if u != state.0.unroll {
+                    let v = Variant { unroll: u, ..state.0 };
+                    consider(&mut s, &mut state, v);
+                }
+            }
         }
         for ifc in [0, 2, 8, 24] {
             let v = Variant { ifc, ..state.0 };
@@ -371,6 +521,18 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, v);
         let v = Variant { spill: !state.0.spill, ..state.0 };
         consider(&mut s, &mut state, v);
+        let v = Variant { fwd: !state.0.fwd, ..state.0 };
+        consider(&mut s, &mut state, v);
+        if over_k(&s, &state.0) {
+            let v = Variant { hot: true, ..state.0 };
+            consider(&mut s, &mut state, v);
+        }
+        let v = Variant { csub: !state.0.csub, ..state.0 };
+        consider(&mut s, &mut state, v);
+        let v = Variant { iv: !state.0.iv, ..state.0 };
+        consider(&mut s, &mut state, v);
+        let v = Variant { lazy: !state.0.lazy, ..state.0 };
+        consider(&mut s, &mut state, v);
         for be in BACKENDS[1..].iter() {
             if s.spent > WORK_BUDGET {
                 break;
@@ -378,15 +540,72 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             let v = state.0;
             s.run(&v, *be);
         }
+        // Refinement: the walk above is greedy, so its result depends on the order of the
+        // steps (a setting adopted early can hide a better combination). Try every single
+        // change of the final setting that was not measured yet; if one is better, move
+        // there, measure the back ends for it, and repeat once.
+        for _ in 0..2 {
+            let b = state.0;
+            let mut nb: Vec<Variant> = Vec::new();
+            for sp in [0u8, 1, 8] {
+                nb.push(Variant { spec: sp, ..b });
+            }
+            for u in [1, 2, 4, 8] {
+                nb.push(Variant { unroll: u, ..b });
+            }
+            for ifc in [0, 4] {
+                nb.push(Variant { ifc, ..b });
+            }
+            for pl in [0u8, 1, 2] {
+                nb.push(Variant { peel: pl, ..b });
+            }
+            nb.push(Variant { sched: !b.sched, ..b });
+            nb.push(Variant { spill: !b.spill, ..b });
+            nb.push(Variant { fwd: !b.fwd, ..b });
+            nb.push(Variant { hot: !b.hot, ..b });
+            nb.push(Variant { csub: !b.csub, ..b });
+            nb.push(Variant { mac: !b.mac, ..b });
+            nb.push(Variant { iv: !b.iv, ..b });
+            nb.push(Variant { lazy: !b.lazy, ..b });
+            for s1 in [0u8, 1, 2] {
+                nb.push(Variant { spill1: s1, ..b });
+            }
+            for v in nb {
+                if v != b && !s.mids.contains_key(&v) {
+                    consider(&mut s, &mut state, v);
+                }
+            }
+            if state.0 == b {
+                break;
+            }
+            for be in BACKENDS[1..].iter() {
+                if s.spent > WORK_BUDGET {
+                    break;
+                }
+                let v = state.0;
+                s.run(&v, *be);
+            }
+        }
     }
     let mut order: Vec<usize> = (0..s.results.len()).collect();
     order.sort_by(|&a, &b| {
         let (x, y) = (&s.results[a], &s.results[b]);
         x.score.partial_cmp(&y.score).unwrap().then(x.size.cmp(&y.size)).then(x.order.cmp(&y.order))
     });
+    // Do no harm: a candidate is written only if it is strictly faster than the input program
+    // on the timing inputs. Otherwise the input itself is the best answer (and has no risk).
+    let base = rf.base();
+    prof("search (all candidates)", &mut t);
     for i in order {
         let c = &s.results[i];
+        if let Some(b) = base {
+            if c.score >= b - 1e-9 {
+                // sorted by score: no later candidate is faster either. Not an error, so quiet.
+                return Ok(text.to_string());
+            }
+        }
         let ok = catch_unwind(AssertUnwindSafe(|| rf.same(&c.cp))).unwrap_or(false);
+        prof("self-check", &mut t);
         if ok {
             return Ok(c.text.clone());
         }

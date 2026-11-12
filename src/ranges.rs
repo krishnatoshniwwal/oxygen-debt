@@ -51,6 +51,8 @@ pub struct Ranges {
     // CFG snapshot used by the walks
     preds: Vec<Vec<usize>>,
     term: Vec<Option<(Op, i64, Vec<usize>)>>,
+    // widening thresholds: m - 1 for every `mod` by a constant m (sorted)
+    thresholds: Vec<i64>,
 }
 
 impl Ranges {
@@ -71,6 +73,7 @@ impl Ranges {
             entry: f.blocks[0],
             preds: vec![Vec::new(); nb],
             term: vec![None; nb],
+            thresholds: Vec::new(),
         };
         for &b in &f.blocks {
             r.idom[b] = f.arena[b].idom.unwrap_or(b);
@@ -443,7 +446,18 @@ impl Ranges {
                 lo = 0;
             }
             if hi > old.1 {
-                hi = if hi <= SMAX { SMAX } else { MASK };
+                // first widening: stop at the next threshold (m - 1 of a `mod` by m), so a
+                // running value reduced by `% m` can be proven to stay in [0, m - 1]; the
+                // walks only stop at a fixpoint, so any stop is sound
+                let t = if counts[du] == 3 && hi <= SMAX {
+                    self.thresholds.iter().copied().find(|&t| t >= hi)
+                } else {
+                    None
+                };
+                hi = match t {
+                    Some(t) => t,
+                    None => if hi <= SMAX { SMAX } else { MASK },
+                };
             }
         }
         self.base[du] = Some((lo, hi));
@@ -513,8 +527,16 @@ impl Ranges {
                     self.defs[ins.d as usize] = Some(DefInfo::of(ins));
                     self.defblk[ins.d as usize] = Some(b);
                 }
+                if ins.op == Op::Mod && ins.a[1] < 0 {
+                    let m = !ins.a[1];
+                    if m >= 1 && m - 1 < SMAX {
+                        self.thresholds.push(m - 1);
+                    }
+                }
             }
         }
+        self.thresholds.sort_unstable();
+        self.thresholds.dedup();
         let mut counts = vec![0u32; self.base.len()];
         let mut stable = false;
         for _ in 0..max_passes {

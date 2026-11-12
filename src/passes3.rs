@@ -353,6 +353,554 @@ pub fn peel_const_loops(f: &mut Func, trips: &BTreeMap<usize, usize>, budget: us
 const WINDOW: usize = 40;
 const AHEAD: usize = 32;
 
+/// Induction-variable rewrite (SSA form). For a loop with one entry edge (from `p0`) and an
+/// induction variable `i = phi(i0, i + c)` (c a constant, the same `i + c` on every back
+/// edge), every `a = i + k` inside the loop (k a constant) is replaced by a new induction
+/// variable `ai = phi(i0 + k, ai + c)`: one add per iteration either way, but `a` no longer
+/// depends on `i` (shorter chains). Exact for all values: add is arithmetic modulo 2^32, so
+/// `ai` equals `i + k` in every iteration.
+///
+/// Then the exit test: `lt i, n` (or `lt n, i`) with `n` loop-invariant becomes
+/// `lt ai, n + k` (`n + k` computed once in `p0`) when the ranges prove that `i + k` and
+/// `n + k` both stay in [0, 2^31) (so the signed comparison is unchanged). If `i` has no
+/// other use left, dead-code removal deletes it and its add.
+pub fn iv_rewrite(f: &mut Func, rng: &Ranges) -> bool {
+    if !rng.ok {
+        return false;
+    }
+    let _ = analyze(f);
+    let nv0 = f.nval.max(0) as usize + 1;
+    // defining block of every value (instructions and phis)
+    let mut defb = vec![usize::MAX; nv0];
+    for &b in &f.blocks {
+        for ins in f.arena[b].phis.iter().chain(f.arena[b].ins.iter()) {
+            if ins.has_d() && ins.d >= 0 && (ins.d as usize) < nv0 {
+                defb[ins.d as usize] = b;
+            }
+        }
+    }
+    let mut rep = vec![crate::passes::NOREP; nv0];
+    let mut changed = false;
+    let nloops = f.loops.len();
+    for li in 0..nloops {
+        let h = f.loops[li].header;
+        let ids = f.loops[li].ids.clone();
+        let blocks = f.loops[li].blocks.clone();
+        let preds = f.arena[h].preds.clone();
+        let outside: Vec<usize> = (0..preds.len()).filter(|&j| !ids.contains(&preds[j])).collect();
+        if outside.len() != 1 || preds.len() < 2 {
+            continue;
+        }
+        let po = outside[0];
+        let p0 = preds[po];
+        if p0 == h || f.arena[p0].ins.is_empty() {
+            continue;
+        }
+        let nphis = f.arena[h].phis.len();
+        for pi in 0..nphis {
+            let phi = f.arena[h].phis[pi].clone();
+            let i = phi.d;
+            if i < 0 || (i as usize) >= nv0 {
+                continue;
+            }
+            let i0 = phi.a[po];
+            // the same i + c on every back edge
+            let mut inext: Option<i64> = None;
+            let mut ok = true;
+            for (j, &x) in phi.a.iter().enumerate() {
+                if j == po {
+                    continue;
+                }
+                if x < 0 || inext.map_or(false, |y| y != x) {
+                    ok = false;
+                    break;
+                }
+                inext = Some(x);
+            }
+            let inext = match (ok, inext) {
+                (true, Some(x)) if (x as usize) < nv0 => x,
+                _ => continue,
+            };
+            let bn = defb[inext as usize];
+            if bn == usize::MAX || !ids.contains(&bn) {
+                continue;
+            }
+            let pos = match f.arena[bn].ins.iter().position(|ins| ins.d == inext) {
+                Some(p) => p,
+                None => continue,
+            };
+            let c = {
+                let ins = &f.arena[bn].ins[pos];
+                if ins.op != Op::Add {
+                    continue;
+                }
+                if ins.a[0] == i && ins.a[1] < 0 {
+                    ins.a[1]
+                } else if ins.a[1] == i && ins.a[0] < 0 {
+                    ins.a[0]
+                } else {
+                    continue;
+                }
+            };
+            // the adds of a constant to i inside the loop (not the step itself)
+            let mut ks: Vec<i64> = Vec::new();
+            for &b in &blocks {
+                for ins in &f.arena[b].ins {
+                    if ins.op == Op::Add && ins.d != inext && ins.d >= 0 && (ins.d as usize) < nv0 && rep[ins.d as usize] == crate::passes::NOREP {
+                        let k = if ins.a[0] == i && ins.a[1] < 0 {
+                            ins.a[1]
+                        } else if ins.a[1] == i && ins.a[0] < 0 {
+                            ins.a[0]
+                        } else {
+                            continue;
+                        };
+                        if k != L0 && !ks.contains(&k) {
+                            ks.push(k);
+                        }
+                    }
+                }
+            }
+            if ks.is_empty() || ks.len() > 4 {
+                continue;
+            }
+            let mut made: Vec<(i64, i64)> = Vec::new(); // (k literal, ai)
+            for &k in &ks {
+                let pre = f.new_val();
+                let ai = f.new_val();
+                let ainext = f.new_val();
+                // i0 + k at the end of p0 (before its branch)
+                let t = f.arena[p0].ins.pop().unwrap();
+                f.arena[p0].ins.push(Instr::new(Op::Add, pre, vec![i0, k], vec![]));
+                f.arena[p0].ins.push(t);
+                // ai + c right after i + c
+                f.arena[bn].ins.insert(pos + 1, Instr::new(Op::Add, ainext, vec![ai, c], vec![]));
+                let args: Vec<i64> = (0..preds.len()).map(|j| if j == po { pre } else { ainext }).collect();
+                f.arena[h].phis.push(Instr::new(Op::Phi, ai, args, vec![]));
+                made.push((k, ai));
+                changed = true;
+            }
+            // replace a = i + k by ai
+            let made2 = made.clone();
+            for &b in &blocks {
+                for ins in &f.arena[b].ins {
+                    if ins.op != Op::Add || ins.d == inext || ins.d < 0 || (ins.d as usize) >= nv0 {
+                        continue;
+                    }
+                    let k = if ins.a[0] == i && ins.a[1] < 0 {
+                        ins.a[1]
+                    } else if ins.a[1] == i && ins.a[0] < 0 {
+                        ins.a[0]
+                    } else {
+                        continue;
+                    };
+                    if let Some(&(_, ai)) = made2.iter().find(|m| m.0 == k) {
+                        rep[ins.d as usize] = ai;
+                    }
+                }
+            }
+            // exit tests: lt i, n  /  lt n, i  with n invariant, i + k and n + k in [0, 2^31)
+            let (kl, ai) = match made.iter().find(|m| !m.0 >= 0) {
+                Some(&m) => m,
+                None => continue,
+            };
+            let kv = !kl; // the constant value (literals are stored as !value)
+            let ri = rng.get(i, h);
+            if ri.1 > SMAX_I - kv {
+                continue;
+            }
+            for bi in 0..blocks.len() {
+                let b = blocks[bi];
+                for ii in 0..f.arena[b].ins.len() {
+                    let ins = f.arena[b].ins[ii].clone();
+                    if ins.op != Op::Lt {
+                        continue;
+                    }
+                    let side = if ins.a[0] == i { 1 } else if ins.a[1] == i { 0 } else { continue };
+                    let n = ins.a[side];
+                    let inv = n < 0 || (n as usize) >= nv0 || (defb[n as usize] != usize::MAX && !ids.contains(&defb[n as usize]));
+                    if !inv || (n >= 0 && (n as usize) >= nv0) {
+                        continue;
+                    }
+                    let rn = rng.get(n, b);
+                    if rn.1 > SMAX_I - kv {
+                        continue;
+                    }
+                    let nk = if n < 0 {
+                        lit(!n + kv)
+                    } else {
+                        let v = f.new_val();
+                        let t = f.arena[p0].ins.pop().unwrap();
+                        f.arena[p0].ins.push(Instr::new(Op::Add, v, vec![n, kl], vec![]));
+                        f.arena[p0].ins.push(t);
+                        v
+                    };
+                    let e = &mut f.arena[b].ins[ii];
+                    e.a[1 - side] = ai;
+                    e.a[side] = nk;
+                }
+            }
+        }
+    }
+    if changed {
+        rep.resize(f.nval.max(0) as usize + 1, crate::passes::NOREP);
+        crate::passes::apply_rep(f, &rep);
+    }
+    changed
+}
+
+const SMAX_I: i64 = 0x7FFF_FFFF;
+
+/// Lazy modular reduction (SSA form). In a loop with one entry edge, a counter
+/// `i = phi(i0, i + 1)` (i0 a constant >= 0) and the header test `br (lt i, n), body, exit`,
+/// a running value `s = phi(s0, (s + t) % m)` (m a constant >= 1) is no longer reduced in
+/// the loop when
+/// * `s` is used in the loop only by that add, `s + t` only by the `%`, and the `%` only by
+///   the phi; after the loop `s` is used only by ordinary instructions (not phis);
+/// * the add runs at most once per iteration (its block is not in an inner loop);
+/// * with T = the largest t, S0 = the largest s0, N = (largest n) - i0 (the most iterations):
+///   S0 + N * T < 2^31 (proven by the value ranges).
+///
+/// Then every unreduced value is in [0, 2^31), where `%` is the ordinary remainder, and
+/// ((s0 + t1) % m + t2) % m ... == (s0 + t1 + t2 + ...) % m. Each use after the loop gets
+/// `r = s % m` right before it. The division leaves the loop-carried chain.
+pub fn lazy_mod(f: &mut Func, rng: &Ranges) -> bool {
+    if !rng.ok {
+        return false;
+    }
+    let _ = analyze(f);
+    let nv = f.nval.max(0) as usize + 1;
+    let mut defloc: Vec<Option<(usize, usize)>> = vec![None; nv]; // (block, index) of instructions
+    for &b in &f.blocks {
+        for (k, ins) in f.arena[b].ins.iter().enumerate() {
+            if ins.has_d() && ins.d >= 0 && (ins.d as usize) < nv {
+                defloc[ins.d as usize] = Some((b, k));
+            }
+        }
+    }
+    // all uses: (block, is_phi)
+    let mut uses: Vec<Vec<(usize, bool)>> = vec![Vec::new(); nv];
+    for &b in &f.blocks {
+        for phi in &f.arena[b].phis {
+            for &x in &phi.a {
+                if x >= 0 && (x as usize) < nv {
+                    uses[x as usize].push((b, true));
+                }
+            }
+        }
+        for ins in &f.arena[b].ins {
+            for &x in &ins.a {
+                if x >= 0 && (x as usize) < nv {
+                    uses[x as usize].push((b, false));
+                }
+            }
+        }
+    }
+    let mut rep = vec![crate::passes::NOREP; nv];
+    let mut changed = false;
+    for li in 0..f.loops.len() {
+        let h = f.loops[li].header;
+        let ids = f.loops[li].ids.clone();
+        let preds = f.arena[h].preds.clone();
+        let outside: Vec<usize> = (0..preds.len()).filter(|&j| !ids.contains(&preds[j])).collect();
+        if outside.len() != 1 || preds.len() < 2 {
+            continue;
+        }
+        let po = outside[0];
+        // the header test: br c, inside, outside with c = lt i, n
+        let term = f.arena[h].ins.last().unwrap().clone();
+        if term.op != Op::Br || term.a[0] < 0 || !ids.contains(&term.t[0]) || ids.contains(&term.t[1]) {
+            continue;
+        }
+        let (cb, ck) = match defloc.get(term.a[0] as usize).copied().flatten() {
+            Some(x) => x,
+            None => continue,
+        };
+        let cond = f.arena[cb].ins[ck].clone();
+        if cb != h || cond.op != Op::Lt || cond.a[0] < 0 {
+            continue;
+        }
+        let (iv, n) = (cond.a[0], cond.a[1]);
+        // i = phi(i0 const >= 0, i + 1 on every back edge)
+        let iphi = match f.arena[h].phis.iter().find(|p| p.d == iv) {
+            Some(p) => p.clone(),
+            None => continue,
+        };
+        let i0 = iphi.a[po];
+        if i0 >= 0 || !i0 > SMAX_I {
+            continue;
+        }
+        let i0v = !i0;
+        let mut step_ok = true;
+        for (j, &x) in iphi.a.iter().enumerate() {
+            if j == po {
+                continue;
+            }
+            let okx = x >= 0
+                && match defloc.get(x as usize).copied().flatten() {
+                    Some((b, k)) => {
+                        let ins = &f.arena[b].ins[k];
+                        ins.op == Op::Add && ((ins.a[0] == iv && ins.a[1] == lit(1)) || (ins.a[1] == iv && ins.a[0] == lit(1)))
+                    }
+                    None => false,
+                };
+            if !okx {
+                step_ok = false;
+                break;
+            }
+        }
+        if !step_ok {
+            continue;
+        }
+        let rn = if n < 0 { (!n, !n) } else { rng.get(n, h) };
+        if rn.1 > SMAX_I {
+            continue;
+        }
+        let ntrip = (rn.1 - i0v).max(0) as i128;
+        let phis = f.arena[h].phis.clone();
+        for sphi in phis {
+            let s = sphi.d;
+            if s == iv || s < 0 || (s as usize) >= nv {
+                continue;
+            }
+            let s0 = sphi.a[po];
+            let mut snext: Option<i64> = None;
+            let mut ok = true;
+            for (j, &x) in sphi.a.iter().enumerate() {
+                if j == po {
+                    continue;
+                }
+                if x < 0 || snext.map_or(false, |y| y != x) {
+                    ok = false;
+                    break;
+                }
+                snext = Some(x);
+            }
+            let snext = match (ok, snext) {
+                (true, Some(x)) if (x as usize) < nv => x,
+                _ => continue,
+            };
+            let (bm, km) = match defloc[snext as usize] {
+                Some(x) => x,
+                None => continue,
+            };
+            let modi = f.arena[bm].ins[km].clone();
+            if modi.op != Op::Mod || modi.a[1] >= 0 || modi.a[0] < 0 {
+                continue;
+            }
+            let m = !modi.a[1];
+            if m < 1 || m > SMAX_I {
+                continue;
+            }
+            let x = modi.a[0];
+            let (bx, kx) = match defloc.get(x as usize).copied().flatten() {
+                Some(v) => v,
+                None => continue,
+            };
+            let addi = f.arena[bx].ins[kx].clone();
+            if addi.op != Op::Add {
+                continue;
+            }
+            let t = if addi.a[0] == s { addi.a[1] } else if addi.a[1] == s { addi.a[0] } else { continue };
+            if t == s {
+                continue;
+            }
+            // the add and the mod run at most once per iteration of this loop
+            if f.arena[bx].lp != Some(li) || f.arena[bm].lp != Some(li) {
+                continue;
+            }
+            // uses: s only by the add inside the loop, otherwise outside and not in phis;
+            // x only by the mod; snext only by the phi
+            let su = &uses[s as usize];
+            let inside: Vec<&(usize, bool)> = su.iter().filter(|u| ids.contains(&u.0)).collect();
+            if inside.len() != 1 || inside[0].1 || su.iter().any(|u| !ids.contains(&u.0) && u.1) {
+                continue;
+            }
+            if uses[x as usize].len() != 1 || uses[snext as usize].iter().any(|u| !(u.1 && u.0 == h)) {
+                continue;
+            }
+            // the bound
+            let rt = if t < 0 { (!t, !t) } else { rng.get(t, bx) };
+            let rs0 = if s0 < 0 { (!s0, !s0) } else { rng.get(s0, h) };
+            if rt.1 > SMAX_I || rs0.1 > SMAX_I {
+                continue;
+            }
+            if (rs0.1 as i128) + ntrip * (rt.1 as i128) > SMAX_I as i128 {
+                continue;
+            }
+            // rewrite: the loop carries x; uses after the loop read s % m
+            rep[snext as usize] = x;
+            for bi in 0..f.blocks.len() {
+                let b = f.blocks[bi];
+                if ids.contains(&b) || !f.arena[b].ins.iter().any(|ins| ins.a.contains(&s)) {
+                    continue;
+                }
+                let old = std::mem::take(&mut f.arena[b].ins);
+                let mut out = Vec::with_capacity(old.len() + 1);
+                for mut ins in old {
+                    if ins.a.contains(&s) {
+                        let r = f.new_val();
+                        out.push(Instr::new(Op::Mod, r, vec![s, lit(m)], vec![]));
+                        for a in ins.a.iter_mut() {
+                            if *a == s {
+                                *a = r;
+                            }
+                        }
+                    }
+                    out.push(ins);
+                }
+                f.arena[b].ins = out;
+            }
+            changed = true;
+        }
+    }
+    if changed {
+        rep.resize(f.nval.max(0) as usize + 1, crate::passes::NOREP);
+        crate::passes::apply_rep(f, &rep);
+    }
+    changed
+}
+
+/// Speculation inside loops (SSA form, before scheduling). A block `s` whose only
+/// predecessor `p` ends in a two-way branch, both in the same innermost loop: move an
+/// instruction of `s` into `p`, just before the branch, when
+/// * it is pure (`add`, `mul`, `select`, `mac`, ...), or a `div`/`mod` that the value ranges
+///   prove cannot trap *at p* (divisor never 0 on any path through p), and
+/// * each operand is a literal or is defined outside `s` (then its definition dominates p,
+///   because p is the only way into s).
+///
+/// The moved instruction now also runs when the branch leaves the loop; that is harmless
+/// because it has no effect and cannot trap, and its value is only used where it was used
+/// before (all those places are dominated by p). Repeated sweeps move work up a whole chain
+/// of unrolled loop copies, so the scheduler can overlap long latencies (`mod` 12, `mul` 3)
+/// of several iterations. At most `limit` instructions leave one block per sweep, and at most
+/// `sweeps` sweeps run: 1 sweep moves work up by one block only (few extra live values),
+/// more sweeps move it further (more overlap, but more names alive at once, which costs
+/// spills on machines with few registers). Whether this pays is decided by the search with
+/// the exact timing model.
+pub fn speculate(f: &mut Func, rng: &Ranges, limit: usize, sweeps: usize) -> bool {
+    if !rng.ok {
+        return false;
+    }
+    // NOT compute_preds: in SSA the order of `preds` matches the phi operands, and
+    // compute_preds would rebuild it in block order (wrong phi values).
+    let rpo = analyze(f);
+    let nv = f.nval.max(0) as usize + 1;
+    // block that defines each value (usize::MAX = parameter / not defined in a block)
+    let mut defb = vec![usize::MAX; nv];
+    for &b in &rpo {
+        for ins in f.arena[b].phis.iter().chain(f.arena[b].ins.iter()) {
+            if ins.has_d() && ins.d >= 0 && (ins.d as usize) < nv {
+                defb[ins.d as usize] = b;
+            }
+        }
+    }
+    // Values that feed a phi (loop-carried values, values leaving the loop) are not moved:
+    // moving one above an exit test makes the exit need the old value too (extra copies and
+    // an extra live name). The long-latency work that feeds them still moves.
+    let mut phi_use = vec![false; nv];
+    for &b in &rpo {
+        for phi in &f.arena[b].phis {
+            for &x in &phi.a {
+                if x >= 0 && (x as usize) < nv {
+                    phi_use[x as usize] = true;
+                }
+            }
+        }
+    }
+    let mut changed = false;
+    for _ in 0..sweeps {
+        let mut moved_any = false;
+        // blocks that received work in this sweep give nothing away in the same sweep, so
+        // one sweep moves each instruction by at most one block
+        let mut got = vec![false; f.arena.len()];
+        for &s in &rpo {
+            if got[s] {
+                continue;
+            }
+            let sb = &f.arena[s];
+            if sb.preds.len() != 1 || !sb.phis.is_empty() || sb.lp.is_none() {
+                continue;
+            }
+            let p = sb.preds[0];
+            if p == s || f.arena[p].lp != sb.lp {
+                continue;
+            }
+            match f.arena[p].ins.last() {
+                Some(t) if t.op == Op::Br && t.t.len() == 2 && t.t[0] != t.t[1] => {}
+                _ => continue,
+            }
+            let n = f.arena[s].ins.len();
+            if n < 2 {
+                continue;
+            }
+            // Only long-latency work is worth moving (div, mod, mul, mac), together with the
+            // instructions of `s` that compute its operands. Cheap ops would only add live
+            // names. Marked backwards: operands come before their uses.
+            let mut want = vec![false; n];
+            {
+                let body = &f.arena[s].ins;
+                let mut need: std::collections::HashSet<i64> = std::collections::HashSet::new();
+                for i in (0..n.saturating_sub(1)).rev() {
+                    let ins = &body[i];
+                    let long = matches!(ins.op, Op::Div | Op::Mod | Op::Mul | Op::Mac | Op::Load);
+                    if long || (ins.has_d() && need.contains(&ins.d)) {
+                        want[i] = true;
+                        for &x in &ins.a {
+                            if x >= 0 {
+                                need.insert(x);
+                            }
+                        }
+                    }
+                }
+            }
+            let mut keep: Vec<Instr> = Vec::with_capacity(n);
+            let mut moved: Vec<Instr> = Vec::new();
+            let body = std::mem::take(&mut f.arena[s].ins);
+            let last = n - 1;
+            // a load may only move if no store / volatile op comes before it in s (then it
+            // still runs after every memory operation it ran after before: those of p)
+            let mut mem_before = false;
+            for (i, ins) in body.into_iter().enumerate() {
+                let is_load = ins.op == Op::Load;
+                let ok = i < last
+                    && want[i]
+                    && moved.len() < limit
+                    && ins.has_d()
+                    && !(ins.d >= 0 && (ins.d as usize) < nv && phi_use[ins.d as usize])
+                    && (is_pure(ins.op)
+                        || (matches!(ins.op, Op::Div | Op::Mod) && !rng.may_trap(&ins, p))
+                        || (is_load && !mem_before && !rng.may_trap(&ins, p)))
+                    && ins.a.iter().all(|&x| x < 0 || (x as usize) >= nv || defb[x as usize] != s);
+                if !ok && matches!(ins.op, Op::Store | Op::Vstore | Op::Vload) {
+                    mem_before = true;
+                }
+                if ok {
+                    if ins.d >= 0 && (ins.d as usize) < nv {
+                        defb[ins.d as usize] = p;
+                    }
+                    moved.push(ins);
+                } else {
+                    keep.push(ins);
+                }
+            }
+            f.arena[s].ins = keep;
+            if !moved.is_empty() {
+                let pb = &mut f.arena[p].ins;
+                let term = pb.pop().unwrap();
+                pb.extend(moved);
+                pb.push(term);
+                got[p] = true;
+                moved_any = true;
+                changed = true;
+            }
+        }
+        if !moved_any {
+            break;
+        }
+    }
+    changed
+}
+
 /// Reorder the instructions of each block (SSA form) so that the in-order machine waits
 /// less. Order is kept between: all visible effects and all instructions that may trap; a
 /// load and any store that may write its address.

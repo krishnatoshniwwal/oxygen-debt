@@ -505,6 +505,38 @@ fn colour(g: &Graph) -> (Vec<i32>, i32) {
     (col, ncol)
 }
 
+/// Greedy colouring in order of decreasing cost (frequency-weighted touches): the hottest
+/// values get the lowest names. Used when more than K names are needed anyway: the
+/// hardware register file is LRU (KIR_SPEC section 10), so what costs is touching many
+/// different names inside a hot loop, not the total number of names. Giving the hot values
+/// a small set of names keeps them resident.
+fn colour_hot(g: &Graph) -> (Vec<i32>, i32) {
+    let mut nodes: Vec<i64> = g.nodes.iter().copied().filter(|&v| g.present[v as usize]).collect();
+    nodes.sort_by(|&a, &b| g.cost[b as usize].partial_cmp(&g.cost[a as usize]).unwrap().then(a.cmp(&b)));
+    let mut col: Vec<i32> = vec![-1; g.adj.len()];
+    let mut ncol = 0;
+    let mut used: Vec<bool> = Vec::new();
+    for &v in &nodes {
+        used.clear();
+        used.resize(g.adj[v as usize].len() + 2, false);
+        for &nn in &g.adj[v as usize] {
+            let c = col[nn as usize];
+            if c >= 0 && (c as usize) < used.len() {
+                used[c as usize] = true;
+            }
+        }
+        let mut c = 0;
+        while used[c] {
+            c += 1;
+        }
+        col[v as usize] = c as i32;
+        if c as i32 + 1 > ncol {
+            ncol = c as i32 + 1;
+        }
+    }
+    (col, ncol)
+}
+
 /// Chaitin-style: remove nodes of degree < k; when stuck, spill the cheapest node.
 fn pick_spills(g: &Graph, k: usize, nospill: &HashSet<i64>) -> Vec<i64> {
     let live_nodes: Vec<i64> = g.nodes.iter().copied().filter(|&v| g.present[v as usize]).collect();
@@ -662,10 +694,39 @@ pub const SCRATCH_WORDS: usize = 1024;
 /// Colour the registers of a non-SSA function with as few names as possible. Copies are
 /// coalesced first. With spill=true and more names than k, values are moved to scratch
 /// memory until k names are enough (the caller has checked that the program itself never
-/// touches the scratch region). Returns the number of names.
-pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool) -> Result<i64, String> {
+/// touches the scratch region). hot=true: if more than k names are still needed, colour the
+/// hottest values first instead (see colour_hot). force=n>0 (only when the caller has checked
+/// that scratch memory is free): if more than k names are needed, first keep the n-th value
+/// of the hottest blocks' live-in values (least-touched first) in scratch memory. Which one
+/// pays is measured by the search. Returns the number of names.
+pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: usize) -> Result<i64, String> {
     let mut nospill: HashSet<i64> = HashSet::new();
     let mut nslots = 0usize;
+    if force > 0 && k.is_some() {
+        let mut gg = build_graph(f)?;
+        let (_, nc) = colour(&gg);
+        if nc as usize > k.unwrap() {
+            let (_, livein) = liveness(f);
+            let maxf = f.blocks.iter().map(|&b| f.arena[b].freq).fold(0.0f64, f64::max);
+            let mut cand: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+            for bi in 0..f.blocks.len() {
+                let b = f.blocks[bi];
+                if f.arena[b].freq >= maxf {
+                    for &x in &livein[b] {
+                        cand.insert(gg.find(x));
+                    }
+                }
+            }
+            let mut cl: Vec<i64> = cand.into_iter().filter(|&v| gg.present[v as usize]).collect();
+            cl.sort_by(|&a, &b| gg.cost[a as usize].partial_cmp(&gg.cost[b as usize]).unwrap().then(a.cmp(&b)));
+            if let Some(&v) = cl.get(force - 1) {
+                let mut slot_of: HashMap<i64, usize> = HashMap::new();
+                slot_of.insert(v, SCRATCH_BASE + nslots);
+                nslots += 1;
+                rewrite_spills(f, &mut gg, &slot_of, &mut nospill);
+            }
+        }
+    }
     let mut rounds = 0;
     let (mut g, col, ncol);
     loop {
@@ -692,6 +753,10 @@ pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool) -> Result<i64, Stri
         }
         rewrite_spills(f, &mut gg, &slot_of, &mut nospill);
     }
+    let (col, ncol) = match k {
+        Some(kk) if hot && ncol as usize > kk => colour_hot(&g),
+        _ => (col, ncol),
+    };
     let mut colf = |x: i64| -> i64 {
         let r = g.find(x);
         col[r as usize] as i64
