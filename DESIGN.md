@@ -379,3 +379,26 @@ kopt's own inputs. Without a profile only the static estimate is used.
 * With odd control flow (loops with two entrances) a value can end up defined in terms of
   itself. kopt does not simplify such values, and the rewrite rules and the replacement map
   have loop guards, because an earlier version could loop forever on them.
+
+## 8. Analysis upgrades (midend session)
+
+**SCCP** (`sccp::sccp`, setting `sccp`). Optimistic sparse conditional constant propagation:
+values start at Top, blocks and edges unreachable; a phi meets only its reachable incoming
+edges, so loop-carried constants are found; a branch with a constant condition, or one the
+value ranges decide (`ranges.get(c, b)` is [1,..] or [0,0]), makes one edge reachable. The result
+replaces constants by literals, turns decided branches into jumps and drops unreachable
+blocks. `div`/`mod` give a constant only from two constants with a non-zero divisor, or a
+range singleton that proves no trap. Gives up (changes nothing) if 64 sweeps do not settle.
+Soundness test: `sccp::tests` (abstract result contains concrete result on constants and
+absorbing cases).
+
+**Known bits** (`domain.rs`). Each value is (v, m): bits in m unknown, others = v. Contains the
+power-of-two congruences (alignment, evenness) and an unsigned interval [v, v|m]. Transfer
+functions for add/sub/mul (carry propagation), and/or/xor, shifts, signed `lt`, `eq`,
+`div`/`mod` (including mod by 2^k of a value with known-zero low bits = 0), select, phi join.
+Tested exhaustively on 4 bits (all pairs of 81 tnums, every member pair), on 8 bits against a
+spread of operands, and with random 32-bit vectors: every concrete result is contained.
+`bits_simplify` replaces known constants and removes `and`/`or` that change nothing. The same
+analysis narrows the intervals of `Ranges::new` (intersection of two true facts).
+Not done yet: wrapped intervals, non-power-of-two strides, relational facts, affine
+dependence tests, PRE, memory phis, code motion, tree-height reduction, extra rewrite rules.
