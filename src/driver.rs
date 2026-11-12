@@ -336,15 +336,17 @@ const MID: usize = 6000;
 const BIG: usize = 300_000;
 
 // (maxdup, unroll factor, loose code-size budget)
-const BACKENDS: [(usize, usize, bool); 9] = [
+const BACKENDS: [(usize, usize, bool); 11] = [
     (4, 1, false),
     (0, 1, false),
     (12, 1, false),
     (4, 2, false),
     (4, 4, false),
     (4, 8, false),
-    (12, 2, false),
     (4, 2, true),
+    (12, 2, false),
+    (24, 1, false),
+    (24, 1, true),
     (12, 1, true),
 ];
 
