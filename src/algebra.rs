@@ -733,9 +733,93 @@ fn try_loop(f: &mut Func, rng: &Ranges, li: usize, rep: &mut Vec<i64>) -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// Division and remainder by a constant with a LOW multiply (no high half in KIR):
+// floor(x / c) = (x * m) >> s for 0 <= x <= xmax when
+//   m = ceil(2^s / c),  x*m < 2^32 (no wrap)  and  (m*c - 2^s) * xmax < 2^s (exact).
+// ---------------------------------------------------------------------------
+pub fn find_magic(c: u64, xmax: u64) -> Option<(u64, u32)> {
+    if c < 2 || c.is_power_of_two() {
+        return None;
+    }
+    for s in 1..=31u32 {
+        let p = 1u128 << s;
+        let m = (p + c as u128 - 1) / c as u128;
+        if m >= 1u128 << 32 || (xmax as u128) * m >= 1u128 << 32 {
+            return None;
+        }
+        let e = m * c as u128 - p;
+        if e * (xmax as u128) < p {
+            return Some((m as u64, s));
+        }
+    }
+    None
+}
+
+/// Rewrite `div x, c` / `mod x, c` (c a literal, not a power of two) when the ranges prove
+/// 0 <= x <= xmax (< 2^31) and a magic pair exists: q = (x*m)>>s, remainder x - q*c.
+/// Replaces a `lat_div` operation by mul + shr (+ mul + sub); the search decides whether that wins.
+pub fn div_const(f: &mut Func, rng: &Ranges) -> bool {
+    if !rng.ok {
+        return false;
+    }
+    let _ = analyze(f);
+    let mut changed = false;
+    for bi in 0..f.blocks.len() {
+        let b = f.blocks[bi];
+        let old = std::mem::take(&mut f.arena[b].ins);
+        let mut out: Vec<Instr> = Vec::with_capacity(old.len() + 4);
+        for ins in old {
+            if (ins.op == Op::Div || ins.op == Op::Mod) && ins.a[1] < 0 && ins.a[0] >= 0 {
+                let c = !ins.a[1] as u64;
+                let iv = rng.get(ins.a[0], b);
+                if c >= 2 && c <= SMAX as u64 && iv.1 <= SMAX {
+                    if let Some((m, s)) = find_magic(c, iv.1 as u64) {
+                        let t = f.new_val();
+                        out.push(Instr::new(Op::Mul, t, vec![ins.a[0], lit(m as i64)], vec![]));
+                        let q = if ins.op == Op::Div { ins.d } else { f.new_val() };
+                        out.push(Instr::new(Op::Shr, q, vec![t, lit(s as i64)], vec![]));
+                        if ins.op == Op::Mod {
+                            let u = f.new_val();
+                            out.push(Instr::new(Op::Mul, u, vec![q, lit(c as i64)], vec![]));
+                            out.push(Instr::new(Op::Sub, ins.d, vec![ins.a[0], u], vec![]));
+                        }
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+            out.push(ins);
+        }
+        f.arena[b].ins = out;
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn magic_division_exact() {
+        for c in 2u64..400 {
+            for &xmax in &[15u64, 255, 1000, 4095, 65535, 100000] {
+                if let Some((m, s)) = find_magic(c, xmax) {
+                    for x in 0..=xmax.min(70000) {
+                        assert_eq!((x * m) >> s, x / c, "c={} xmax={} x={}", c, xmax, x);
+                        assert!(x * m < 1 << 32);
+                    }
+                    if xmax > 70000 {
+                        for x in (xmax - 5000)..=xmax {
+                            assert_eq!((x * m) >> s, x / c);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(find_magic(10, 65535).is_some());
+        assert!(find_magic(10, 1 << 30).is_none());
+    }
 
     fn binom_ref(k: u64, j: u32) -> u128 {
         let mut r: u128 = 1;

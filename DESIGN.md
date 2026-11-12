@@ -406,3 +406,12 @@ Bench (5 machines): total cycles on the sample inputs -3.6 % (default 58043 -> 5
 sum_sq, nested_invariant, loop_invariant, sum_cubes_mod drop 5-20x.
 Not done yet: division by constants, divisibility tests, i/c and i%c counters, strength
 reduction, larger compile-time evaluation, the GF(2) / idiom items.
+
+**Division by a constant with a low multiply** (`algebra::div_const`, `alg` bit 2). `div x, c` /
+`mod x, c` (c a literal, not a power of two) with `0 <= x <= xmax < 2^31` proven by the ranges
+becomes `q = (x*m) >> s` (remainder `x - q*c`) when a pair (m, s) exists with `m = ceil(2^s/c)`,
+`xmax*m < 2^32` (no wrap) and `(m*c - 2^s)*xmax < 2^s` (exact). Tested for c < 400 and
+xmax up to 10^5 against real division. Chosen by the search only (bench: 4 cases changed,
+`digit_sum|wide_fast` 360 -> 330; two few_registers cases lose 2-9 % through the greedy search
+order). Not done: peeling until x is in range (`digit_sum`), signed division with bias,
+divisibility tests, `i/c` counters, strength reduction, larger constant evaluation, GF(2)/idioms.

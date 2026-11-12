@@ -111,6 +111,14 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
                 lz = true;
             }
         }
+        if v.alg & 2 != 0 {
+            let rng = Ranges::new(f, 14);
+            if algebra::div_const(f, &rng) {
+                chk(f, "div_const");
+                scalar(f);
+                lz = true;
+            }
+        }
         let mut rng = Ranges::new(f, 14);
         prof("  ranges", &mut t);
         let c1 = passes2::range_simplify(f, &rng, v.csub);
@@ -483,6 +491,8 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         // loop algebra (algebra.rs): tried first, because a deleted loop makes most other settings moot
         let b = state.0;
         consider(&mut s, &mut state, Variant { alg: 1, ..b });
+        let b = state.0;
+        consider(&mut s, &mut state, Variant { alg: b.alg | 2, ..b });
         if over_k(&s, &state.0) {
             // More names than registers. Spilling to scratch is one answer; keeping the
             // program order (scheduling stretches live ranges) and giving hot values the low
@@ -580,7 +590,8 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { mac: !b.mac, ..b });
             nb.push(Variant { iv: !b.iv, ..b });
             nb.push(Variant { lazy: !b.lazy, ..b });
-            nb.push(Variant { alg: if b.alg == 0 { 1 } else { 0 }, ..b });
+            nb.push(Variant { alg: b.alg ^ 1, ..b });
+            nb.push(Variant { alg: b.alg ^ 2, ..b });
             for s1 in [0u8, 1, 2] {
                 nb.push(Variant { spill1: s1, ..b });
             }
