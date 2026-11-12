@@ -1,4 +1,5 @@
 //! driver.rs - the kopt pipeline and the search over its knobs.
+use crate::algebra;
 use crate::backend;
 use crate::evalsim::Reference;
 use crate::ir::{self, Func};
@@ -27,11 +28,12 @@ pub struct Variant {
     pub spill1: u8,  // >0: keep the n-th least-touched value live through the hottest blocks in scratch
     pub iv: bool,    // induction-variable rewrite of i + k in loops (and of the exit test)
     pub lazy: bool,  // lazy modular reduction of running sums in counted loops
+    pub alg: u8,     // loop algebra (algebra.rs), bit 1 = closed forms of polynomial loops
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, alg: 0 }
     }
 }
 
@@ -97,6 +99,14 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
             let rng = Ranges::new(f, 14);
             if passes3::lazy_mod(f, &rng) {
                 chk(f, "lazy_mod");
+                scalar(f);
+                lz = true;
+            }
+        }
+        if v.alg & 1 != 0 {
+            let rng = Ranges::new(f, 14);
+            if algebra::closed_forms(f, &rng) {
+                chk(f, "closed_forms");
                 scalar(f);
                 lz = true;
             }
@@ -470,6 +480,10 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 _ => false,
             }
         };
+        // loop algebra (algebra.rs): tried first, because a deleted loop makes most other settings moot
+        let b = state.0;
+        consider(&mut s, &mut state, Variant { alg: 1, lazy: true, ..b });
+        consider(&mut s, &mut state, Variant { alg: 1, ..b });
         if over_k(&s, &state.0) {
             // More names than registers. Spilling to scratch is one answer; keeping the
             // program order (scheduling stretches live ranges) and giving hot values the low
@@ -487,7 +501,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 consider(&mut s, &mut state, v);
             }
         }
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, alg: 0 };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
@@ -567,6 +581,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { mac: !b.mac, ..b });
             nb.push(Variant { iv: !b.iv, ..b });
             nb.push(Variant { lazy: !b.lazy, ..b });
+            nb.push(Variant { alg: if b.alg == 0 { 1 } else { 0 }, ..b });
             for s1 in [0u8, 1, 2] {
                 nb.push(Variant { spill1: s1, ..b });
             }
