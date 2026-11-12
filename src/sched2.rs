@@ -1513,7 +1513,19 @@ pub fn optimize(text: &str, mc: &Machine, inputs: &[Inputs], max_steps: u64) -> 
         }
     }
     match optimize_inner(&cur, mc, inputs, max_steps) {
-        Some(t) => Some(t),
+        Some(t) => {
+            // Reordering and renaming can leave reloads of values that are still in a name:
+            // run the peephole once more on the result.
+            if std::env::var_os("KOPT_NOPP").is_none() {
+                if let Ok(p) = parse_program(&t) {
+                    let mut net = Net::from_program(&p);
+                    if spill_peephole(&mut net) {
+                        return Some(net.to_text());
+                    }
+                }
+            }
+            Some(t)
+        }
         None => {
             if changed {
                 Some(cur)
