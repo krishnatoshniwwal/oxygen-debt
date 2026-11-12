@@ -726,7 +726,7 @@ impl Region {
 
     /// Choose names for the block-local values of `order`, writing them to `names` (one per
     /// node, -1 for nodes without destination). Pinned values keep their name.
-    pub fn name_block(&self, order: &[usize], sim: &Sim, names: &mut Vec<i32>) {
+    pub fn name_block(&self, order: &[usize], sim: &Sim, names: &mut Vec<i32>, mode: u8) {
         let n = self.n;
         let nc = self.cands.len();
         let mut pos = vec![0i32; n];
@@ -807,7 +807,7 @@ impl Region {
                         continue;
                     }
                     let delay = (wr[c] - t).max(0);
-                    let key = (delay, if touched[c] { 0u8 } else { 1u8 }, if x == ins.d { 0u8 } else { 1u8 }, x);
+                    let key = if mode == 0 { (delay, if touched[c] { 0u8 } else { 1u8 }, if x == ins.d { 0u8 } else { 1u8 }, x) } else { (delay, if x == ins.d { 0u8 } else { 1u8 }, if touched[c] { 0u8 } else { 1u8 }, x) };
                     if best.map_or(true, |(bk, _)| key < bk) {
                         best = Some((key, c));
                     }
@@ -1100,6 +1100,55 @@ impl<'a> Opt<'a> {
                 if cur.as_ref().map_or(true, |x| c < x.0) {
                     cur = Some((c, o));
                 }
+            }
+        }
+        // small blocks: enumerate legal orders (leaf budget), each scored exactly with naming
+        if n <= 10 {
+            let mut leaves = 0usize;
+            let mut npred: Vec<usize> = reg.preds.iter().map(|p| p.len()).collect();
+            let mut order: Vec<usize> = Vec::with_capacity(n);
+            let mut next: Vec<usize> = vec![0]; // per depth: next candidate node to try
+            'dfs: while !next.is_empty() {
+                if leaves >= 700 || self.sim.steps > self.max_steps {
+                    break;
+                }
+                let depth = next.len() - 1;
+                if order.len() == n {
+                    leaves += 1;
+                    if let Some((c, code)) = self.try_order(&reg, &order, &wins) {
+                        if c < best.0 {
+                            best = (c, code);
+                            cur = Some((c, order.clone()));
+                        }
+                    }
+                    // backtrack
+                    next.pop();
+                    if let Some(i) = order.pop() {
+                        for &s in &reg.succs[i] {
+                            npred[s] += 1;
+                        }
+                    }
+                    continue;
+                }
+                let mut i = next[depth];
+                while i < n && (npred[i] != 0 || order.contains(&i)) {
+                    i += 1;
+                }
+                if i >= n {
+                    next.pop();
+                    if let Some(j) = order.pop() {
+                        for &s in &reg.succs[j] {
+                            npred[s] += 1;
+                        }
+                    }
+                    continue 'dfs;
+                }
+                next[depth] = i + 1;
+                order.push(i);
+                for &s in &reg.succs[i] {
+                    npred[s] -= 1;
+                }
+                next.push(0);
             }
         }
         // local search: move one instruction to another legal position, keep if not worse
