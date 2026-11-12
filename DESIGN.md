@@ -379,3 +379,29 @@ kopt's own inputs. Without a profile only the static estimate is used.
 * With odd control flow (loops with two entrances) a value can end up defined in terms of
   itself. kopt does not simplify such values, and the rewrite rules and the replacement map
   have loop guards, because an earlier version could loop forever on them.
+
+## 8. sched2: exact-cost reordering and renaming (src/sched2.rs)
+
+**What.** After the normal pipeline, `driver::post_sched2` runs `sched2::optimize` on the 3 best candidate
+texts. The text is parsed into blocks of named instructions. Hot blocks (>= 0.5% of dynamic instructions,
+<= 240 instructions; program <= 4000 instructions and 400 names) are re-ordered and their block-local
+values re-named. `Sim` is a step-by-step copy of `kir::time_trace` (slots, memory ports, latency, fences,
+write-after-write waits, instruction-cache cost, hardware-LRU misses); a unit test checks it equals
+`time_trace` on bench programs. A candidate order is scored by simulating short windows of the real
+execution (about 48 instructions before the block, the block, about 32 after) from the timing inputs.
+Seeds: original order and three cycle-driven list schedules; then a fixed-seed local search moves one
+instruction to a random legal position and keeps it if the exact score does not rise (<= 1200 moves per
+block, global step budget, no clocks). Naming is redone per candidate (`Region::name_block`): a local
+value takes a name no needed value lives in, preferring no write-after-write wait, then names already in
+the block's working set, then its old name. Names live into or out of the block never change.
+**Time.** ~100-300 simulated instructions per evaluation; 4M simulated steps per candidate.
+**Why safe.** Only order inside a block and local names change. Data edges keep every use reading the same
+value. Instructions that may trap, write memory or are visible keep their order (`conflict`): two loads or
+two divisions may swap; a store or visible op never crosses a trapping one; literal addresses < 4096 and
+division by a non-zero literal cannot trap. A definition of a name live after the block stays last, after
+every read of the old value. The result is an ordinary candidate: kept only if strictly faster, then
+self-checked.
+**Measured** (tests/measure.py, 100 programs x 5 machines): sample cycles 88988 -> 83230 (-6.5%),
+held-out variants 265790 -> 247999, no mismatches.
+**Not done:** global LRU-aware naming (MIN, rematerialisation, scratch), branch and bound for small blocks,
+memory ordering from range proofs, large programs.
