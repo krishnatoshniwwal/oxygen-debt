@@ -31,11 +31,12 @@ pub struct Variant {
     pub rot: u8,     // latency rotation of loops (loopopt): 0 = off, 1 = best set by the model, 2 = all long-latency work
     pub gu: u8,      // guarded unrolling (loopopt): 0 = off, else u bodies per test
     pub acc: u8,     // accumulator splitting (loopopt): 0 = off, else at most this many partial chains
+    pub sr: bool,    // scalar replacement of loads across iterations (loopopt)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0 }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false }
     }
 }
 
@@ -212,6 +213,11 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     }
     prof("unroll, ranges, dce", &mut t);
     passes2::lower(&mut f, mc, v.mac);
+    let srv = std::env::var_os("KOPT_FORCE_SR").is_some() || v.sr;
+    if srv && !light {
+        loopopt::reuse_loads(&mut f);
+        chk(&mut f, "reuse_loads");
+    }
     let rotv = std::env::var("KOPT_FORCE_ROT").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.rot);
     if rotv > 0 && !light {
         loopopt::rotate_loops(&mut f, mc, rotv);
@@ -508,7 +514,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 consider(&mut s, &mut state, v);
             }
         }
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0 };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
@@ -634,6 +640,8 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         for a in [2u8, 4] {
             tries.push(Variant { acc: a, ..b });
         }
+        tries.push(Variant { sr: true, ..b });
+        tries.push(Variant { sr: true, unroll: 1, ..b });
         let before = state.0;
         for v in tries {
             consider2(&mut s, &mut state, v);
@@ -651,6 +659,10 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             for a in [0u8, 2, 4] {
                 let cur = state.0;
                 consider2(&mut s, &mut state, Variant { acc: a, ..cur });
+            }
+            for sr in [false, true] {
+                let cur = state.0;
+                consider2(&mut s, &mut state, Variant { sr, ..cur });
             }
             for be in BACKENDS[1..].iter() {
                 if s.spent > WORK_BUDGET * 2 {

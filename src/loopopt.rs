@@ -1000,7 +1000,7 @@ fn try_unroll_guarded(f: &mut Func, sh: &Shape, rng: &Ranges, u: usize) -> bool 
     if defined_in_loop(b) {
         return rej(line!());
     }
-    let (p, _d) = match affine(f, h, &sh.chain, a, 0) {
+    let (p, aff_d) = match affine(f, h, &sh.chain, a, 0) {
         Some(t) => t,
         None => return rej(line!()),
     };
@@ -1011,7 +1011,8 @@ fn try_unroll_guarded(f: &mut Func, sh: &Shape, rng: &Ranges, u: usize) -> bool 
     let k = (u as i64 - 1) * step;
     let ar = rng.get(a, h);
     let br = rng.get(b, h);
-    if ar.1 + k > 0x7fff_fffe || br.1 > 0x7fff_ffff {
+    let proven = ar.1 + k <= 0x7fff_fffe && br.1 <= 0x7fff_ffff;
+    if !proven && b < 0 {
         return rej(line!());
     }
     // ---- build ----
@@ -1099,14 +1100,43 @@ fn try_unroll_guarded(f: &mut Func, sh: &Shape, rng: &Ranges, u: usize) -> bool 
     f.arena[h2].preds = vec![pre, b2];
     f.arena[b2].ins = b2_ins;
     f.arena[b2].preds = vec![h2];
-    for tt in f.arena[pre].ins.last_mut().unwrap().t.iter_mut() {
-        if *tt == h {
-            *tt = h2;
+    if proven {
+        for tt in f.arena[pre].ins.last_mut().unwrap().t.iter_mut() {
+            if *tt == h {
+                *tt = h2;
+            }
         }
-    }
-    f.arena[h].preds[sh.pre_idx] = h2;
-    for (i, ph) in f.arena[h].phis.iter_mut().enumerate() {
-        ph.a[sh.pre_idx] = p2[i];
+        f.arena[h].preds[sh.pre_idx] = h2;
+        for (i, ph) in f.arena[h].phis.iter_mut().enumerate() {
+            ph.a[sh.pre_idx] = p2[i];
+        }
+    } else {
+        // versioning: a run-time check in the preheader. The front loop is used only when
+        // the first value of a and b are both below 2^31 (then a + (u-1)c < b < 2^31 holds
+        // exactly as in the proven case); otherwise the original loop runs alone.
+        let pidx = phis.iter().position(|x| x.d == p).unwrap();
+        let init = phis[pidx].a[sh.pre_idx];
+        let ai = if aff_d == 0 {
+            init
+        } else {
+            let v = f.new_val();
+            let term = f.arena[pre].ins.pop().unwrap();
+            f.arena[pre].ins.push(Instr::new(Op::Add, v, vec![init, lit(aff_d)], vec![]));
+            f.arena[pre].ins.push(term);
+            v
+        };
+        let x = f.new_val();
+        let s = f.new_val();
+        let term = f.arena[pre].ins.pop().unwrap();
+        f.arena[pre].ins.push(Instr::new(Op::Or, x, vec![ai, b], vec![]));
+        f.arena[pre].ins.push(Instr::new(Op::Shr, s, vec![x, lit(31)], vec![]));
+        let mut term = term;
+        term = Instr::no_d(Op::Br, vec![s], vec![h, h2]);
+        f.arena[pre].ins.push(term);
+        f.arena[h].preds.push(h2);
+        for (i, ph) in f.arena[h].phis.iter_mut().enumerate() {
+            ph.a.push(p2[i]);
+        }
     }
     let pos = f.blocks.iter().position(|&bb| bb == h).unwrap();
     f.blocks.insert(pos, b2);
@@ -1119,7 +1149,39 @@ mod tests {
     use super::*;
     use crate::ssa;
 
-    const PROGS: [&str; 3] = [
+    const PROGS: [&str; 5] = [
+        "func f(v0)
+entry:
+  const v2, 0
+  const v3, 0
+  jmp h
+h:
+  lt v4, v3, v0
+  br v4, b, x
+b:
+  add v2, v2, v3
+  add v3, v3, 1
+  jmp h
+x:
+  ret v2
+",
+        "func f(v0)
+entry:
+  and v1, v0, 255
+  const v2, 7
+  const v3, 0
+  jmp h
+h:
+  add v6, v3, 5
+  lt v4, v6, v1
+  br v4, b, x
+b:
+  add v2, v2, v6
+  add v3, v3, 3
+  jmp h
+x:
+  ret v2
+",
         "func f(v0)\nentry:\n  and v1, v0, 63\n  const v2, 0\n  const v3, 0\n  jmp h\nh:\n  lt v4, v3, v1\n  br v4, b, x\nb:\n  load v5, v3\n  add v2, v2, v5\n  add v3, v3, 1\n  jmp h\nx:\n  ret v2\n",
         // a load that traps for some inputs (address up to 4153): must not be moved out of its trap order
         "func f(v0)\nentry:\n  and v1, v0, 15\n  const v2, 0\n  const v3, 0\n  jmp h\nh:\n  lt v4, v3, v1\n  br v4, b, x\nb:\n  add v6, v3, 4090\n  load v5, v6\n  add v2, v2, v5\n  add v3, v3, 1\n  jmp h\nx:\n  ret v2\n",
@@ -1167,13 +1229,16 @@ mod tests {
 
     #[test]
     fn rotation_moves_the_load() {
-        let text = run_variant(PROGS[0], 1, 0);
+        let text = run_variant(PROGS[2], 1, 0);
         assert!(text.matches("load").count() >= 2, "{}", text);
     }
 
     #[test]
     fn guarded_unroll_adds_a_front_loop() {
-        let text = run_variant(PROGS[0], 0, 4);
+        let t0 = run_variant(PROGS[2], 0, 4);
+        assert!(t0.contains("ug_body"), "{}", t0);
+        let _ = 0;
+        let text = run_variant(PROGS[2], 0, 4);
         assert!(text.contains("ug_body"), "{}", text);
     }
 }
@@ -1344,4 +1409,183 @@ fn rej(line: u32) -> bool {
         eprintln!("UG reject at loopopt.rs:{}", line);
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// Scalar replacement: reuse a loaded word in the next iteration
+// ---------------------------------------------------------------------------
+
+/// (phi, constant) when the address operand is `phi + c` (c may be 0) of a header phi.
+fn addr_form(f: &Func, sh: &Shape, v: i64) -> Option<(i64, i64)> {
+    if v < 0 {
+        return None;
+    }
+    let h = sh.chain[0];
+    if f.arena[h].phis.iter().any(|p| p.d == v) {
+        return Some((v, 0));
+    }
+    for &b in &sh.chain {
+        for ins in &f.arena[b].ins {
+            if ins.has_d() && ins.d == v {
+                if ins.op == Op::Add && ins.a.len() == 2 && ins.a[1] < 0 && f.arena[h].phis.iter().any(|p| p.d == ins.a[0]) {
+                    return Some((ins.a[0], lit_signed(ins.a[1])));
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// In a chain loop with a counter p stepping by s, `load(p + c)` of the next iteration reads the
+/// word that `load(p + c + s)` read in this one. When no store of the loop can write either
+/// word, the earlier load is replaced by a header phi carrying the later load's value, with a
+/// copy of the load in the preheader for the first iteration. Saves a memory slot per load.
+pub fn reuse_loads(f: &mut Func) -> bool {
+    analyze(f);
+    let mut changed = false;
+    let mut tried: HashSet<String> = HashSet::new();
+    for _ in 0..6 {
+        analyze(f);
+        let mut target = None;
+        for li in 0..f.loops.len() {
+            if f.loops.iter().any(|o| o.parent == Some(li)) {
+                continue;
+            }
+            let name = f.arena[f.loops[li].header].name.clone();
+            if tried.insert(name) {
+                target = Some(li);
+                break;
+            }
+        }
+        let li = match target {
+            Some(l) => l,
+            None => break,
+        };
+        let sh = match chain_shape(f, li) {
+            Some(s) => s,
+            None => continue,
+        };
+        analyze(f);
+        let rng = Ranges::new(f, 14);
+        if !rng.ok {
+            continue;
+        }
+        let h = sh.chain[0];
+        // loads and stores of the loop
+        let mut loads: Vec<(i64, i64, i64, usize)> = Vec::new(); // (dest, phi, c, block)
+        let mut store_ranges: Vec<(i64, i64)> = Vec::new();
+        for &b in &sh.chain {
+            for ins in &f.arena[b].ins {
+                if ins.op == Op::Store {
+                    store_ranges.push(rng.get(ins.a[0], b));
+                }
+                if ins.op == Op::Load {
+                    if let Some((p, c)) = addr_form(f, &sh, ins.a[0]) {
+                        loads.push((ins.d, p, c, b));
+                    }
+                }
+            }
+        }
+        let disjoint = |l: (i64, i64)| store_ranges.iter().all(|s| s.1 < l.0 || l.1 < s.0);
+        let mut partner: BTreeMap<i64, i64> = BTreeMap::new();
+        for &(d1, p1, c1, b1) in &loads {
+            let s = match phi_step(f, &sh, p1) {
+                Some(s) => s,
+                None => continue,
+            };
+            let a1 = f.arena[b1].ins.iter().find(|i| i.has_d() && i.d == d1).unwrap().a[0];
+            if !disjoint(rng.get(a1, b1)) {
+                continue;
+            }
+            for &(d2, p2, c2, b2) in &loads {
+                if p2 == p1 && c2 == c1 + s && d2 != d1 {
+                    let a2 = f.arena[b2].ins.iter().find(|i| i.has_d() && i.d == d2).unwrap().a[0];
+                    if disjoint(rng.get(a2, b2)) {
+                        partner.insert(d1, d2);
+                        break;
+                    }
+                }
+            }
+        }
+        if partner.is_empty() {
+            continue;
+        }
+        // build on a copy
+        let mut g = f.clone();
+        let mut nid = g.nval;
+        let mut qmap: BTreeMap<i64, i64> = BTreeMap::new();
+        for &d1 in partner.keys() {
+            qmap.insert(d1, nid);
+            nid += 1;
+        }
+        let mut pro: Vec<Instr> = Vec::new();
+        let mut qphis: Vec<Instr> = Vec::new();
+        let mut pro_loads: Vec<i64> = Vec::new();
+        for (&d1, &d2) in partner.iter() {
+            let &(_, p1, c1, _) = loads.iter().find(|l| l.0 == d1).unwrap();
+            let init = f.arena[h].phis.iter().find(|x| x.d == p1).unwrap().a[sh.pre_idx];
+            let addr = if c1 == 0 {
+                init
+            } else {
+                let v = nid;
+                nid += 1;
+                pro.push(Instr::new(Op::Add, v, vec![init, lit(c1)], vec![]));
+                v
+            };
+            let lv = nid;
+            nid += 1;
+            pro.push(Instr::new(Op::Load, lv, vec![addr], vec![]));
+            pro_loads.push(lv);
+            let back = qmap.get(&d2).copied().unwrap_or(d2);
+            let mut a = vec![0i64; 2];
+            a[sh.pre_idx] = lv;
+            a[sh.back_idx] = back;
+            qphis.push(Instr::new(Op::Phi, qmap[&d1], a, vec![]));
+        }
+        // remove the replaced loads and rename their users
+        for &b in &sh.chain {
+            g.arena[b].ins.retain(|i| !(i.op == Op::Load && i.has_d() && partner.contains_key(&i.d)));
+        }
+        for &bb in g.blocks.clone().iter() {
+            let blk = &mut g.arena[bb];
+            for ins in blk.phis.iter_mut().chain(blk.ins.iter_mut()) {
+                if qphis.iter().any(|q| std::ptr::eq(q, ins)) {
+                    continue;
+                }
+                for a in ins.a.iter_mut() {
+                    if let Some(&q) = qmap.get(a) {
+                        *a = q;
+                    }
+                }
+            }
+        }
+        g.arena[h].phis.extend(qphis);
+        let term = g.arena[sh.pre].ins.pop().unwrap();
+        g.arena[sh.pre].ins.extend(pro);
+        g.arena[sh.pre].ins.push(term);
+        g.nval = nid;
+        // the preheader loads run even when the loop does not: prove them trap-free
+        let mut g2 = g.clone();
+        let rng2 = Ranges::new(&mut g2, 14);
+        if !rng2.ok {
+            continue;
+        }
+        let ok = pro_loads.iter().all(|&lv| match g2.arena[sh.pre].ins.iter().find(|i| i.has_d() && i.d == lv) {
+            Some(ins) => !rng2.may_trap(ins, sh.pre),
+            None => true,
+        });
+        if !ok {
+            continue;
+        }
+        if std::env::var_os("KOPT_ROT_DEBUG").is_some() {
+            eprintln!("SR header {} partner {:?}", f.arena[h].name, partner);
+        }
+        *f = g;
+        changed = true;
+    }
+    if changed {
+        analyze(f);
+    }
+    changed
 }
