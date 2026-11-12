@@ -116,6 +116,11 @@ impl Reference {
         Some(tot)
     }
 
+    /// The timing inputs (clones), for passes that tune against the real execution.
+    pub fn timing_inputs(&self) -> Vec<Inputs> {
+        self.timing.iter().map(|t| t.0.clone()).collect()
+    }
+
     /// Total cycles of the input program over the timing inputs, or None if there are no
     /// timing inputs (then candidates cannot be compared with the input).
     pub fn base(&self) -> Option<f64> {
