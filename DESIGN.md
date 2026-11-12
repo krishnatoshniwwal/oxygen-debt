@@ -549,3 +549,29 @@ values (phis, i.e. loop-carried accumulators, count as latest, so `acc + a + b +
 associative and commutative modulo 2^32 and every leaf is defined before the chain root,
 where the new instructions are placed. Measured: 12 bench cases faster, none slower
 (about -1% on `wide_fast`); fuzz clean.
+## 8. Block layout as a TSP, and state splitting (`layout.rs`, `control.rs`)
+
+**Layout objective.** On the Kiln only two things depend on the block order: a taken jump
+(about P + 1/2 cycles) and, for every executed instruction at file index >= C, about Q cycles.
+`br c, A, B` may have either target next in the file, so branch sense needs no extra work; the
+order alone decides. For an order `o`: cost = pt * (W - sum of w(a,b) over adjacent pairs) +
+q * sum of cnt(b) * (instructions of b at index >= C). `w` are edge execution counts, measured
+by running the candidate on kopt's timing inputs (`Reference::traces`), plus 5 % of the static
+estimate / profile weight so unmeasured edges still count.
+`layout::held_karp` solves this exactly for <= 16 blocks (the position of a block depends only
+on the set before it, so the icache term fits the DP). Above that `local_search` relocates
+segments of 1-3 blocks from the chain-merging order with the exact objective and a fixed work
+budget (no clocks). Only whole blocks are re-ordered, so behaviour cannot change. The TSP order
+is built in `Search::try_tsp` for every (variant, back end) pair as an *extra candidate*, scored
+with the exact timing model like any other; it wins only if strictly faster (ties keep the
+greedy order). Latch duplication with rotated placement is the existing tail copy (`BACKENDS`
+maxdup 4/12) followed by this layout, which puts the copy before the header.
+
+**State splitting** (`control::split_by_state`, knob `thr` = 0/1/2 state registers). A register
+written with >= 2 different constants and compared with constants >= 2 times is a state register.
+The code is copied once per constant value the register is known to hold on arrival (tracked
+along the CFG by the last `const` write; forgotten where the register is dead). Every copy is a
+faithful copy and every new edge an old edge, so the transformation is correct whatever the
+tracking believes; the SSA passes then fold `eq state, K` in each copy and the dispatch
+disappears (vending_fsm -30 % cycles). Growth is capped at 3 * icache_size instructions (nothing
+changes if more would be added); the search measures it like every other knob.

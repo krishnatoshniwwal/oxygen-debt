@@ -2,11 +2,13 @@
 mod algebra;
 mod backend;
 mod domain;
+mod control;
 mod driver;
 mod evalsim;
 mod ir;
 mod kir;
 mod loopopt;
+mod layout;
 mod passes;
 mod passes2;
 mod passes3;
