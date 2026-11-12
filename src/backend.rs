@@ -163,7 +163,7 @@ pub fn estimate_freq(f: &mut Func, profile: Option<&Profile>) {
 }
 
 /// List of (weight, order, src, dst) for all CFG edges.
-fn edge_weights(f: &Func, profile: Option<&Profile>) -> Vec<(f64, usize, usize, usize)> {
+pub fn edge_weights(f: &Func, profile: Option<&Profile>) -> Vec<(f64, usize, usize, usize)> {
     let mut edges = Vec::new();
     let mut n = 0;
     for &b in &f.blocks {

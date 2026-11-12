@@ -4,7 +4,7 @@ kit's `large` kind (fresh register names everywhere, const + op + mov chains), t
 time limit (30 s) and what it gains on such programs.
 
 Usage: python tests/gen_large.py OUTDIR [--size N] [--seed S]
-Writes OUTDIR/large_{poly,crc,mix,loops}.kir with a matching .in file each.
+Writes OUTDIR/large_{poly,crc,mix,loops,affine,crcstep,chain,ladder,nest,cold}.kir with a matching .in file each.
 """
 import argparse
 import os
@@ -183,14 +183,192 @@ def gen_loops(size, rnd):
         str(rnd.randrange(100)) for _ in range(64)) + '\n'
 
 
+def wrap(name, params, g):
+    return 'func large_%s(%s)\nentry:\n' % (name, params) + '\n'.join(g.lines) + '\n'
+
+
+def gen_affine(size, rnd):
+    """Repetitive straight-line code whose copies differ by affine constants: a load address that wraps
+    (i % 256), a stride constant (3*i+7) and a store address (1024 + i % 1024) change per copy
+    (a rerolling target)."""
+    g = Gen(2)
+    ck = g.v()
+    g.emit('const %s, 0' % ck)
+    i = 0
+    while g.count() < size:
+        a, l, m, s, t, o, n = [g.v() for _ in range(7)]
+        g.emit('const %s, %d' % (a, i % 256))
+        g.emit('load %s, %s' % (l, a))
+        g.emit('mul %s, %s, v1' % (m, l))
+        g.emit('add %s, %s, %d' % (s, m, 3 * i + 7))
+        g.emit('xor %s, %s, v0' % (t, s))
+        g.emit('const %s, %d' % (o, 1024 + i % 1024))
+        g.emit('store %s, %s' % (o, t))
+        g.emit('add %s, %s, %s' % (n, ck, t))
+        g.emit('mov %s, %s' % (ck, n))
+        i += 1
+    g.emit('ret %s' % ck)
+    return wrap('affine', 'v0, v1', g), 'args 5 9\nmem 0 ' + ' '.join(
+        str(rnd.randrange(100)) for _ in range(256)) + '\n'
+
+
+def gen_crcstep(size, rnd):
+    """Branch-free CRC steps: crc = (crc >> 1) ^ (POLY & -(crc & 1)); eight per input byte, the byte
+    address changing per copy."""
+    g = Gen(1)
+    crc = g.v()
+    g.emit('const %s, 0xFFFFFFFF' % crc)
+    byte = 0
+    while g.count() < size:
+        a, b, x = g.v(), g.v(), g.v()
+        g.emit('const %s, %d' % (a, byte % 200))
+        g.emit('load %s, %s' % (b, a))
+        g.emit('xor %s, %s, %s' % (x, crc, b))
+        g.emit('mov %s, %s' % (crc, x))
+        for _ in range(8):
+            m, n, p, s, r = [g.v() for _ in range(5)]
+            g.emit('and %s, %s, 1' % (m, crc))
+            g.emit('sub %s, 0, %s' % (n, m))
+            g.emit('and %s, %s, 0xEDB88320' % (p, n))
+            g.emit('shr %s, %s, 1' % (s, crc))
+            g.emit('xor %s, %s, %s' % (r, s, p))
+            g.emit('mov %s, %s' % (crc, r))
+        byte += 1
+    g.emit('ret %s' % crc)
+    return wrap('crcstep', 'v0', g), 'args 7\nmem 0 ' + ' '.join(
+        str(rnd.randrange(256)) for _ in range(256)) + '\n'
+
+
+def gen_chain(size, rnd):
+    """One long dependent chain with mixed operations and random per-step constants (no repetition)."""
+    g = Gen(2)
+    acc = g.v()
+    g.emit('add %s, v0, v1' % acc)
+    ops = ['add', 'xor', 'mul', 'sub', 'or']
+    while g.count() < size:
+        n = g.v()
+        g.emit('%s %s, %s, %d' % (rnd.choice(ops), n, acc, rnd.randrange(1, 1 << 20)))
+        m = g.v()
+        g.emit('shr %s, %s, %d' % (m, n, rnd.randrange(1, 9)))
+        k = g.v()
+        g.emit('xor %s, %s, %s' % (k, n, m))
+        acc = k
+    g.emit('ret %s' % acc)
+    return wrap('chain', 'v0, v1', g), 'args 5 9\nmem 0 1 2 3\n'
+
+
+def gen_ladder(size, rnd):
+    """Deep CFG: a long sequence of data-dependent if/else diamonds that each update one accumulator
+    (deep dominator tree, many joins)."""
+    g = Gen(2)
+    acc = g.v()
+    g.emit('const %s, 0' % acc)
+    k = 0
+    while g.count() < size:
+        c, t = g.v(), g.v()
+        cont, side, join = g.lab('cont'), g.lab('side'), g.lab('join')
+        g.emit('and %s, v0, %d' % (t, 1 << (k % 20)))
+        g.emit('lt %s, 0, %s' % (c, t))
+        g.emit('br %s, %s, %s' % (c, side, cont))
+        g.label(side)
+        s1 = g.v()
+        g.emit('add %s, %s, %d' % (s1, acc, k + 1))
+        g.emit('mov %s, %s' % (acc, s1))
+        g.emit('jmp %s' % join)
+        g.label(cont)
+        s2 = g.v()
+        g.emit('xor %s, %s, v1' % (s2, acc))
+        g.emit('mov %s, %s' % (acc, s2))
+        g.emit('jmp %s' % join)
+        g.label(join)
+        k += 1
+    g.emit('ret %s' % acc)
+    return wrap('ladder', 'v0, v1', g), 'args 123457 9\nmem 0 1 2 3\n'
+
+
+def gen_nest(size, rnd):
+    """Very deeply nested ifs: if (c1) { ...; if (c2) { ...; if (c3) ... } } with a common exit.
+    Dominator-tree depth equals the number of levels."""
+    g = Gen(2)
+    acc = g.v()
+    g.emit('const %s, 0' % acc)
+    k = 0
+    while g.count() < size:
+        c, t = g.v(), g.v()
+        nxt = g.lab('lvl')
+        g.emit('and %s, v0, %d' % (t, 1 << (k % 24)))
+        g.emit('br %s, %s, out' % (t, nxt))
+        g.label(nxt)
+        s1 = g.v()
+        g.emit('add %s, %s, %d' % (s1, acc, k + 1))
+        g.emit('mov %s, %s' % (acc, s1))
+        k += 1
+    g.emit('jmp out')
+    g.label('out')
+    g.emit('ret %s' % acc)
+    return wrap('nest', 'v0, v1', g), 'args -1 9\nmem 0 1 2 3\n'
+
+
+def gen_cold(size, rnd):
+    """A small hot loop, then a huge block that is skipped at run time (v0 != 12345), then a second
+    small hot loop: mostly cold code."""
+    g = Gen(1)
+    i, s, c = g.v(), g.v(), g.v()
+    g.emit('const %s, 0' % i)
+    g.emit('const %s, 0' % s)
+    g.emit('jmp h1')
+    g.label('h1')
+    g.emit('lt %s, %s, 200' % (c, i))
+    g.emit('br %s, b1, mid' % c)
+    g.label('b1')
+    t = g.v()
+    g.emit('mul %s, %s, 3' % (t, i))
+    g.emit('add %s, %s, %s' % (s, s, t))
+    g.emit('add %s, %s, 1' % (i, i))
+    g.emit('jmp h1')
+    g.label('mid')
+    e = g.v()
+    g.emit('eq %s, v0, 12345' % e)
+    g.emit('br %s, cold, h2pre' % e)
+    g.label('cold')
+    acc = g.v()
+    g.emit('mov %s, %s' % (acc, s))
+    while g.count() < size:
+        x, y = g.v(), g.v()
+        g.emit('mul %s, %s, %d' % (x, acc, rnd.randrange(3, 99)))
+        g.emit('xor %s, %s, %d' % (y, x, rnd.randrange(1 << 16)))
+        acc = y
+    g.emit('mov %s, %s' % (s, acc))
+    g.emit('jmp h2pre')
+    g.label('h2pre')
+    g.emit('const %s, 0' % i)
+    g.emit('jmp h2')
+    g.label('h2')
+    g.emit('lt %s, %s, 300' % (c, i))
+    g.emit('br %s, b2, done' % c)
+    g.label('b2')
+    g.emit('add %s, %s, %s' % (s, s, i))
+    g.emit('add %s, %s, 1' % (i, i))
+    g.emit('jmp h2')
+    g.label('done')
+    g.emit('ret %s' % s)
+    return wrap('cold', 'v0', g), 'args 7\nmem 0 1 2 3\n'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('outdir')
     ap.add_argument('--size', type=int, default=100000)
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--only', default=None)
     o = ap.parse_args()
     os.makedirs(o.outdir, exist_ok=True)
-    for name, fn in (('poly', gen_poly), ('crc', gen_crc), ('mix', gen_mix), ('loops', gen_loops)):
+    shapes = (('poly', gen_poly), ('crc', gen_crc), ('mix', gen_mix), ('loops', gen_loops),
+              ('affine', gen_affine), ('crcstep', gen_crcstep), ('chain', gen_chain),
+              ('ladder', gen_ladder), ('nest', gen_nest), ('cold', gen_cold))
+    for name, fn in shapes:
+        if o.only and o.only != name:
+            continue
         rnd = random.Random(o.seed)
         text, inp = fn(o.size, rnd)
         with open(os.path.join(o.outdir, 'large_%s.kir' % name), 'w', newline='\n') as fh:

@@ -1,12 +1,21 @@
 //! driver.rs - the kopt pipeline and the search over its knobs.
+use crate::algebra;
 use crate::backend;
 use crate::evalsim::Reference;
 use crate::ir::{self, Func};
+use crate::large;
 use crate::kir::*;
+use crate::loopopt;
+use crate::control;
+use crate::layout;
 use crate::passes;
 use crate::passes2;
 use crate::passes3;
 use crate::ranges::Ranges;
+use crate::sched2;
+use crate::domain;
+use crate::reassoc;
+use crate::sccp;
 use crate::ssa;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -27,11 +36,19 @@ pub struct Variant {
     pub spill1: u8,  // >0: keep the n-th least-touched value live through the hottest blocks in scratch
     pub iv: bool,    // induction-variable rewrite of i + k in loops (and of the exit test)
     pub lazy: bool,  // lazy modular reduction of running sums in counted loops
+    pub rot: u8,     // latency rotation of loops (loopopt): 0 = off, 1 = best set by the model, 2 = all long-latency work
+    pub gu: u8,      // guarded unrolling (loopopt): 0 = off, else u bodies per test
+    pub acc: u8,     // accumulator splitting (loopopt): 0 = off, else at most this many partial chains
+    pub sr: bool,    // scalar replacement of loads across iterations (loopopt)
+    pub alg: u8,     // loop algebra (algebra.rs), bit 1 = closed forms of polynomial loops
+    pub tree: bool,  // tree-height reduction of add/mul/xor/and/or chains
+    pub sccp: bool,  // optimistic conditional constant propagation combined with the ranges
+    pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0 }
     }
 }
 
@@ -93,10 +110,40 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
     let rounds = if f.count_instrs() > MID { 2 } else { 4 };
     for _ in 0..rounds {
         let mut lz = false;
+        let mut sc = false;
+        if v.sccp {
+            let rng = Ranges::new(f, 14);
+            if sccp::sccp(f, Some(&rng)) {
+                chk(f, "sccp");
+                scalar(f);
+                sc = true;
+            }
+            if domain::bits_simplify(f) {
+                chk(f, "bits_simplify");
+                scalar(f);
+                sc = true;
+            }
+        }
         if v.lazy {
             let rng = Ranges::new(f, 14);
             if passes3::lazy_mod(f, &rng) {
                 chk(f, "lazy_mod");
+                scalar(f);
+                lz = true;
+            }
+        }
+        if v.alg & 1 != 0 {
+            let rng = Ranges::new(f, 14);
+            if algebra::closed_forms(f, &rng) {
+                chk(f, "closed_forms");
+                scalar(f);
+                lz = true;
+            }
+        }
+        if v.alg & 2 != 0 {
+            let rng = Ranges::new(f, 14);
+            if algebra::div_const(f, &rng) {
+                chk(f, "div_const");
                 scalar(f);
                 lz = true;
             }
@@ -141,7 +188,7 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
             }
         }
         prof("  ifconv (+ranges, scalar)", &mut t);
-        if !(lz || c1 || c2 || c3 || c4) {
+        if !(sc || lz || c1 || c2 || c3 || c4) {
             break;
         }
     }
@@ -150,11 +197,21 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 /// Everything up to (not including) the choice of block order and final code copying.
 fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func, String> {
     let mut t = prof_start();
-    let mut f = ir::from_program(prog);
     let ic = mc.icache_size;
-    ssa::build_ssa(&mut f);
+    let mut f = if v.thr > 0 && !light {
+        // DFA state splitting (control.rs) works before SSA, so it bypasses large.rs's cached start
+        let mut f = ir::from_program(prog);
+        let cap = (3 * ic).max(64) as usize;
+        for r in control::state_registers(&f, v.thr as usize) {
+            control::split_by_state(&mut f, r, cap);
+        }
+        ssa::build_ssa(&mut f);
+        f
+    } else {
+        large::start_func(prog, mc, v.ifc)
+    };
     chk(&mut f, "build_ssa");
-    prof("build_ssa", &mut t);
+    prof("build_ssa (+reroll)", &mut t);
     phase_a(&mut f, v, light);
     prof("phase_a total", &mut t);
     if v.peel != 0 {
@@ -184,6 +241,13 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
         ssa::build_ssa(&mut f);
         phase_a(&mut f, v, false);
     }
+    let guv = std::env::var("KOPT_FORCE_GU").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.gu);
+    if guv > 1 && !light {
+        if loopopt::unroll_guarded(&mut f, guv as usize) {
+            chk(&mut f, "unroll_guarded");
+            phase_a(&mut f, v, false);
+        }
+    }
     let mut rng = Ranges::new(&mut f, if light { 6 } else { 14 });
     passes::dce(&mut f, Some(&rng));
     passes::cleanup_cfg(&mut f);
@@ -200,7 +264,26 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
         }
     }
     prof("unroll, ranges, dce", &mut t);
+    if v.tree {
+        reassoc::reassoc(&mut f);
+        chk(&mut f, "reassoc");
+    }
     passes2::lower(&mut f, mc, v.mac);
+    let srv = std::env::var_os("KOPT_FORCE_SR").is_some() || v.sr;
+    if srv && !light {
+        loopopt::reuse_loads(&mut f);
+        chk(&mut f, "reuse_loads");
+    }
+    let rotv = std::env::var("KOPT_FORCE_ROT").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.rot);
+    if rotv > 0 && !light {
+        loopopt::rotate_loops(&mut f, mc, rotv);
+        chk(&mut f, "rotate_loops");
+    }
+    let accv = std::env::var("KOPT_FORCE_ACC").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.acc);
+    if accv > 1 {
+        loopopt::split_accumulators(&mut f, accv as usize);
+        chk(&mut f, "split_accumulators");
+    }
     if v.sched {
         if !light {
             rng = Ranges::new(&mut f, 14);
@@ -242,7 +325,7 @@ fn finish(f: &mut Func, mc: &Machine, profile: Option<&backend::Profile>, maxdup
         backend::unroll(f, factor, budget.max(0));
         backend::final_cleanup(f);
     }
-    backend::layout(f, profile);
+    large::layout(f, mc, profile);
     ir::to_text(f)
 }
 
@@ -324,6 +407,38 @@ impl<'a> Search<'a> {
         }
     }
 
+    /// Block order by the TSP model of layout.rs (exact Held-Karp for small functions), scored
+    /// exactly like any other candidate. `f` is in the order that produced `cp`.
+    fn try_tsp(&mut self, f: &Func, cp: &Compiled, v: &Variant, be: Backend) -> Option<f64> {
+        let (prog, mc, profile, rf) = (self.prog, self.mc, self.profile, self.rf);
+        let r = catch_unwind(AssertUnwindSafe(|| -> Option<(String, Compiled, usize, f64)> {
+            let traces = rf.traces(cp);
+            let counts = layout::dyn_counts(f, cp, &traces);
+            let ord = layout::improve(f, mc, &counts, profile)?;
+            let mut g = f.clone();
+            g.blocks = ord;
+            let out = ir::to_text(&g);
+            if self.seen.contains_key(&out) {
+                return None;
+            }
+            let newprog = parse_program(&out).ok()?;
+            check_machine_features(&newprog, mc).ok()?;
+            if newprog.params.len() != prog.params.len() {
+                return None;
+            }
+            let cp2 = compile_program(&newprog);
+            let sc = rf.score(&cp2)?;
+            Some((out, cp2, newprog.instrs.len(), sc))
+        }));
+        self.spent += f.count_instrs() / 3;
+        if let Ok(Some((out, cp2, size, sc))) = r {
+            self.seen.insert(out.clone(), sc);
+            self.results.push(Cand { score: sc, size, order: self.n, text: out, cp: cp2, desc: format!("{:?} {:?} +tsp", v, be) });
+            return Some(sc);
+        }
+        None
+    }
+
     /// Score one (variant, backend) pair. Returns the score or None.
     fn run(&mut self, v: &Variant, be: Backend) -> Option<f64> {
         self.mid(v);
@@ -371,9 +486,13 @@ impl<'a> Search<'a> {
         }
         match r {
             Ok(Ok((out, Some((cp, size, sc)), _))) => {
+                if self.size > MID {
+                    large::publish(self.rf, &cp, sc, self.rf.base(), &out);
+                }
                 self.seen.insert(out.clone(), sc);
+                let tsp = self.try_tsp(&f, &cp, v, be);
                 self.results.push(Cand { score: sc, size, order: self.n, text: out, cp, desc: format!("{:?} {:?}", v, be) });
-                Some(sc)
+                Some(tsp.map_or(sc, |t| t.min(sc)))
             }
             Ok(Ok((_, None, sc))) => Some(sc),
             other => {
@@ -389,11 +508,66 @@ impl<'a> Search<'a> {
     }
 }
 
+
+/// Candidates from large.rs on one setting of the knobs: hot/cold layouts, and rerolling of
+/// straight-line repetition (each rerolling mode with a few register/scheduling settings). The
+/// mid-ends of the plain setting are kept for the layouts; rerolling needs its own.
+fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: usize) {
+    // Hot/cold layout (large.rs): the best setting again, with the loops moved in front of
+    // run-once code. Needs no new mid-end run (the mids are kept).
+    if size as i64 > mc.icache_size && !large::soft_expired() {
+        let v = v0x;
+        for lm in [1u8, 2] {
+            large::set_layout(lm);
+            s.run(&v, b0);
+        }
+        large::set_layout(0);
+    }
+    // Rerolling of straight-line repetition (large.rs): one more candidate per mode, on the best
+    // setting found. Only programs that do not fit in the instruction cache are worth it.
+    if size as i64 > mc.icache_size + 8 {
+        let saved = std::mem::take(&mut s.mids);
+        let cap = if size > MID { 14 * size + 10_000 } else { usize::MAX };
+        for mode in [1u8, 2, 3] {
+            if large::soft_expired() || s.spent > cap {
+                break;
+            }
+            large::set_roll(mode);
+            if !large::start_func_ex(s.prog, mc, v0x.ifc).1 {
+                continue; // nothing was rolled: the same program as without rerolling
+            }
+            s.mids.clear();
+            let b = v0x;
+            let mut vs = vec![b, Variant { spill: !b.spill, ..b }];
+            if size <= MID {
+                vs.extend([Variant { sched: !b.sched, ..b }, Variant { hot: !b.hot, ..b }, Variant { fwd: !b.fwd, ..b }]);
+            }
+            vs.dedup();
+            for v in vs {
+                if large::soft_expired() || s.spent > cap {
+                    break;
+                }
+                s.run(&v, b0);
+                for lm in [1u8, 2] {
+                    large::set_layout(lm);
+                    s.run(&v, b0);
+                }
+                large::set_layout(0);
+            }
+        }
+        large::set_roll(0);
+        s.mids = saved;
+    }
+}
+
 const WORK_BUDGET: usize = 16000; // the search stops when this much work has been spent
 
 /// Return the optimized program text. Falls back to the input text on any problem.
 pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<String, String> {
     let prog = parse_program(text)?; // an invalid input is an error
+    if large::too_hostile(&prog) {
+        return Ok(text.to_string());
+    }
     let profile = profile_text.map(backend::parse_profile);
     let size = prog.instrs.len();
     let mut t = prof_start();
@@ -402,6 +576,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         Err(_) => return Ok(text.to_string()),
     };
     prof("reference runs", &mut t);
+    large::set_count_inputs(rf.first_inputs(2));
     let mut s = Search {
         prog: &prog,
         mc,
@@ -425,9 +600,18 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     };
     let mut state: (Variant, Option<f64>) = (v0, None);
     state.1 = s.run(&state.0, b0);
+    let t_first = large::elapsed_ms();
+    if size > MID {
+        large_extras(&mut s, state.0, b0, mc, size);
+    }
+    // a big win by rerolling makes the settings of the plain program irrelevant
+    let rolled_big_win = match (s.results.iter().map(|c| c.score).fold(f64::INFINITY, f64::min), rf.base()) {
+        (m, Some(b)) => m < 0.5 * b,
+        _ => false,
+    };
 
     fn consider(s: &mut Search, state: &mut (Variant, Option<f64>), v: Variant) {
-        if s.spent > WORK_BUDGET {
+        if s.spent > WORK_BUDGET || large::soft_expired() {
             return;
         }
         let sc = s.run(&v, BACKENDS[0]);
@@ -455,6 +639,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
         tries.push(Variant { ifc: 0, ..b });
         for v in tries {
+            if large::soft_expired() || rolled_big_win || !large::fits_half(t_first) {
+                break;
+            }
             let sc = s.run(&v, b0);
             if let Some(sc) = sc {
                 if state.1.map_or(true, |x| sc < x - 1e-9) {
@@ -470,6 +657,11 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 _ => false,
             }
         };
+        // loop algebra (algebra.rs): tried first, because a deleted loop makes most other settings moot
+        let b = state.0;
+        consider(&mut s, &mut state, Variant { alg: 1, ..b });
+        let b = state.0;
+        consider(&mut s, &mut state, Variant { alg: b.alg | 2, ..b });
         if over_k(&s, &state.0) {
             // More names than registers. Spilling to scratch is one answer; keeping the
             // program order (scheduling stretches live ranges) and giving hot values the low
@@ -487,7 +679,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 consider(&mut s, &mut state, v);
             }
         }
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, sccp: false, ..Variant::default() };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
@@ -531,7 +723,15 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, v);
         let v = Variant { iv: !state.0.iv, ..state.0 };
         consider(&mut s, &mut state, v);
+        for t in [1u8, 2] {
+            let v = Variant { thr: t, ..state.0 };
+            consider(&mut s, &mut state, v);
+        }
         let v = Variant { lazy: !state.0.lazy, ..state.0 };
+        consider(&mut s, &mut state, v);
+        let v = Variant { sccp: !state.0.sccp, ..state.0 };
+        consider(&mut s, &mut state, v);
+        let v = Variant { tree: !state.0.tree, ..state.0 };
         consider(&mut s, &mut state, v);
         for be in BACKENDS[1..].iter() {
             if s.spent > WORK_BUDGET {
@@ -567,6 +767,13 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { mac: !b.mac, ..b });
             nb.push(Variant { iv: !b.iv, ..b });
             nb.push(Variant { lazy: !b.lazy, ..b });
+            nb.push(Variant { alg: b.alg ^ 1, ..b });
+            nb.push(Variant { alg: b.alg ^ 2, ..b });
+            nb.push(Variant { sccp: !b.sccp, ..b });
+            nb.push(Variant { tree: !b.tree, ..b });
+            for t in [0u8, 1, 2] {
+                nb.push(Variant { thr: t, ..b });
+            }
             for s1 in [0u8, 1, 2] {
                 nb.push(Variant { spill1: s1, ..b });
             }
@@ -586,6 +793,74 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 s.run(&v, *be);
             }
         }
+    }
+    fn consider2(s: &mut Search, state: &mut (Variant, Option<f64>), v: Variant) {
+        // developer aid: KOPT_LOOPOPT=mask limits the loopopt settings (1 rot, 2 gu, 4 acc, 8 sr)
+        let mask = std::env::var("KOPT_LOOPOPT").ok().and_then(|x| x.parse::<u32>().ok()).unwrap_or(15);
+        if (v.rot > 0 && mask & 1 == 0) || (v.gu > 0 && mask & 2 == 0) || (v.acc > 0 && mask & 4 == 0) || (v.sr && mask & 8 == 0) {
+            return;
+        }
+        if s.spent > WORK_BUDGET * 2 {
+            return;
+        }
+        if let Some(sc) = s.run(&v, BACKENDS[0]) {
+            if state.1.map_or(true, |b| sc < b - 1e-9) {
+                *state = (v, Some(sc));
+            }
+        }
+    }
+    if size <= MID {
+        // Loop transformations of loopopt.rs. They run after the general search, on its final
+        // setting, so that they can only add candidates (never change the path of the walk).
+        let b = state.0;
+        let mut tries: Vec<Variant> = Vec::new();
+        for g in [2u8, 4, 8] {
+            tries.push(Variant { gu: g, ..b });
+            tries.push(Variant { gu: g, unroll: 1, ..b });
+        }
+        for r in [1u8, 2] {
+            tries.push(Variant { rot: r, ..b });
+            tries.push(Variant { rot: r, unroll: 1, ..b });
+        }
+        for a in [2u8, 4] {
+            tries.push(Variant { acc: a, ..b });
+        }
+        tries.push(Variant { sr: true, ..b });
+        tries.push(Variant { sr: true, unroll: 1, ..b });
+        let before = state.0;
+        for v in tries {
+            consider2(&mut s, &mut state, v);
+        }
+        // combine: rotation on top of the best guarded unrolling and the other way round
+        let b2 = state.0;
+        if b2 != before {
+            for r in [0u8, 1, 2] {
+                consider2(&mut s, &mut state, Variant { rot: r, ..b2 });
+            }
+            for g in [0u8, 2, 4, 8] {
+                let cur = state.0;
+                consider2(&mut s, &mut state, Variant { gu: g, ..cur });
+            }
+            for a in [0u8, 2, 4] {
+                let cur = state.0;
+                consider2(&mut s, &mut state, Variant { acc: a, ..cur });
+            }
+            for sr in [false, true] {
+                let cur = state.0;
+                consider2(&mut s, &mut state, Variant { sr, ..cur });
+            }
+            for be in BACKENDS[1..].iter() {
+                if s.spent > WORK_BUDGET * 2 {
+                    break;
+                }
+                let v = state.0;
+                s.run(&v, *be);
+            }
+        }
+    }
+    post_sched2(&mut s);
+    if size <= MID {
+        large_extras(&mut s, state.0, b0, mc, size);
     }
     let mut order: Vec<usize> = (0..s.results.len()).collect();
     order.sort_by(|&a, &b| {
@@ -613,4 +888,51 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     }
     eprintln!("kopt: writing the input unchanged");
     Ok(text.to_string())
+}
+
+/// sched2 (exact-cost reordering and renaming) on the best candidates found so far. Each result
+/// is a new candidate: it is kept only if it measures faster, like every other candidate.
+fn post_sched2(s: &mut Search) {
+    if s.size > MID || s.results.is_empty() {
+        return;
+    }
+    let inputs = s.rf.timing_inputs();
+    if inputs.is_empty() {
+        return;
+    }
+    let mut idx: Vec<usize> = (0..s.results.len()).collect();
+    idx.sort_by(|&a, &b| {
+        let (x, y) = (&s.results[a], &s.results[b]);
+        x.score.partial_cmp(&y.score).unwrap().then(x.size.cmp(&y.size)).then(x.order.cmp(&y.order))
+    });
+    let mc = s.mc;
+    let nparams = s.prog.params.len();
+    for &i in idx.iter().take(3) {
+        let text = s.results[i].text.clone();
+        let r = catch_unwind(AssertUnwindSafe(|| sched2::optimize(&text, mc, &inputs, 4_000_000)));
+        let t2 = match r {
+            Ok(Some(t)) => t,
+            _ => continue,
+        };
+        if s.seen.contains_key(&t2) {
+            continue;
+        }
+        let rf = s.rf;
+        let ok = catch_unwind(AssertUnwindSafe(|| -> Option<(Compiled, usize, f64)> {
+            let np = parse_program(&t2).ok()?;
+            check_machine_features(&np, mc).ok()?;
+            if np.params.len() != nparams {
+                return None;
+            }
+            let cp = compile_program(&np);
+            let sc = rf.score(&cp)?;
+            Some((cp, np.instrs.len(), sc))
+        }));
+        if let Ok(Some((cp, size, sc))) = ok {
+            s.n += 1;
+            s.seen.insert(t2.clone(), sc);
+            let desc = format!("sched2 of {}", s.results[i].desc);
+            s.results.push(Cand { score: sc, size, order: s.n, text: t2, cp, desc });
+        }
+    }
 }
