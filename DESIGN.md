@@ -1,11 +1,13 @@
 # DESIGN.md - how kopt works
 
-`kopt` is written in Python 3 with the standard library only. No compiler framework and
-no solver is used.
+`kopt` is written in Rust (stable, standard library only). No compiler framework and no
+solver is used. It was first written in Python; that version is kept in `pyref/` as a
+reference, and the Rust version produces byte-identical output on all practice programs.
 
-**Code copied from the kit.** `src/kirlib.py` is an unchanged copy of the kit's
-`kirlib.py`. kopt uses its parser to read the input, and its interpreter and timing model
-to measure and check its own outputs (see "Pass order", step 9).
+**Code ported from the kit.** `src/kir.rs` is a Rust port of the kit's `kirlib.py`: the
+parser, the machine file reader, the interpreter and the timing model, plus the generator
+of made-up inputs. kopt uses it to read the input and to measure and check its own outputs
+(see "Pass order", step 9).
 
 **Reading used.** Cytron et al. (SSA construction with dominance frontiers); Cooper,
 Harvey, Kennedy (a simple dominator algorithm); Sreedhar et al. (leaving SSA through
@@ -251,7 +253,8 @@ The machine file is read with the kit's `load_machine`. It is used in these plac
   to 60 made-up inputs (the kit's edge values, awkward pairs, random values, random and
   very large memory contents) and compares result, volatile log and data memory. On any
   difference the candidate is dropped. This is a second line of defence, not the proof.
-* If anything raises an error inside kopt, the input is written unchanged.
+* If anything fails or panics inside kopt, that candidate is dropped (and if nothing is
+  left, or an error escapes, the input is written unchanged).
 
 ## 6. Profiles
 
@@ -269,11 +272,14 @@ kopt's own inputs. Without a profile only the static estimate is used.
   best one for them.
 * Very large programs (more than 6000 instructions) get one light pass over the pipeline
   with no search: no peeling, no if-conversion, no unrolling. On our test programs of
-  about 100,000 instructions kopt needs 3 to 10 seconds on a laptop. If the interference
+  about 100,000 instructions kopt needs 1 to 4 seconds on a laptop. If the interference
   graph would be extremely large, kopt writes the input unchanged instead of running out
   of time.
 * With more live values than registers the result is still far from the best possible:
   spilled values are loaded right before each use, and loops are never split.
 * The optimizations listed as missing in section 1.
-* Python is slow. The work budget of the search is counted in instructions, not in
-  seconds, so the output never depends on the speed of the computer.
+* The work budget of the search is counted in instructions, not in seconds, so the output
+  never depends on the speed of the computer.
+* With odd control flow (loops with two entrances) a value can end up defined in terms of
+  itself. kopt does not simplify such values, and the rewrite rules and the replacement map
+  have loop guards, because an earlier version could loop forever on them.

@@ -41,7 +41,7 @@ def main():
             name = os.path.basename(p)[:-4]
             out1 = os.path.join(d, name + '.kir')
             out2 = os.path.join(d, name + '.second.kir')
-            cmd = [py, kopt, p, '--machine', m]
+            cmd = [kopt, p, '--machine', m]
             prof = p[:-4] + '.prof'
             if os.path.exists(prof):
                 cmd += ['--profile', prof]
