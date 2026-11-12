@@ -1218,7 +1218,7 @@ impl Region {
 /// Improve the order and the block-local names of `text`. `inputs` are typical inputs of
 /// the program; their executions give the contexts a block is scored in. Returns the new
 /// text, or None if nothing was changed or the program is not suited.
-pub fn optimize(text: &str, mc: &Machine, inputs: &[Inputs], max_steps: u64) -> Option<String> {
+fn optimize_inner(text: &str, mc: &Machine, inputs: &[Inputs], max_steps: u64) -> Option<String> {
     let prog = parse_program(text).ok()?;
     if prog.instrs.len() > 4000 || prog.instrs.len() < 4 {
         return None;
@@ -1395,5 +1395,131 @@ mod tests {
             }
         }
         eprintln!("changed {}", changed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scratch-memory peephole (spill code)
+// ---------------------------------------------------------------------------
+/// Inside a block, a `load d, A` (A a literal address below 4096, so it cannot trap) after a
+/// `store A, x` or an earlier `load _, A` is replaced by a copy of the value still held in a name
+/// (or a constant), as long as nothing that may write A and no write of that name lies between.
+/// Then a `store A, _` to a scratch word (>= 3072) that no load can read any more (every load of
+/// the program has a literal address, and none names A) is removed. Returns true if changed.
+pub fn spill_peephole(net: &mut Net) -> bool {
+    #[derive(Clone, Copy)]
+    enum V {
+        N(i32),
+        C(i64),
+    }
+    let mut changed = false;
+    for bl in net.blocks.iter_mut() {
+        let mut held: Vec<(i64, V)> = Vec::new();
+        let old = std::mem::take(bl);
+        let mut out: Vec<Ins> = Vec::with_capacity(old.len());
+        for mut ins in old {
+            match ins.op {
+                Op::Load => {
+                    if let Opd::L(a) = ins.a[0] {
+                        if (a as u64) < MEM_WORDS as u64 {
+                            let hit = held.iter().find(|h| h.0 == a).map(|h| h.1);
+                            if let Some(v) = hit {
+                                changed = true;
+                                match v {
+                                    V::N(y) if y == ins.d => {
+                                        continue; // already in place
+                                    }
+                                    V::N(y) => {
+                                        ins.op = Op::Mov;
+                                        ins.a[0] = Opd::R(y);
+                                    }
+                                    V::C(c) => {
+                                        ins.op = Op::Const;
+                                        ins.a[0] = Opd::L(c);
+                                    }
+                                }
+                            }
+                            let d = ins.d;
+                            held.retain(|h| !matches!(h.1, V::N(y) if y == d));
+                            if hit.is_none() {
+                                held.retain(|h| h.0 != a);
+                                held.push((a, V::N(d)));
+                            }
+                            out.push(ins);
+                            continue;
+                        }
+                    }
+                }
+                Op::Store => {
+                    match ins.a[0] {
+                        Opd::L(a) if (a as u64) < MEM_WORDS as u64 => {
+                            held.retain(|h| h.0 != a);
+                            match ins.a[1] {
+                                Opd::R(x) => held.push((a, V::N(x))),
+                                Opd::L(c) => held.push((a, V::C(c))),
+                            }
+                        }
+                        _ => held.clear(),
+                    }
+                    out.push(ins);
+                    continue;
+                }
+                _ => {}
+            }
+            if ins.d >= 0 {
+                let d = ins.d;
+                held.retain(|h| !matches!(h.1, V::N(y) if y == d));
+            }
+            out.push(ins);
+        }
+        *bl = out;
+    }
+    // dead scratch stores
+    let mut read: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut unknown = false;
+    for bl in &net.blocks {
+        for ins in bl {
+            if ins.op == Op::Load {
+                match ins.a[0] {
+                    Opd::L(a) => {
+                        read.insert(a);
+                    }
+                    _ => unknown = true,
+                }
+            }
+        }
+    }
+    if !unknown {
+        for bl in net.blocks.iter_mut() {
+            let before = bl.len();
+            bl.retain(|ins| !(ins.op == Op::Store && matches!(ins.a[0], Opd::L(a) if a >= SCRATCH_BASE as i64 && (a as u64) < MEM_WORDS as u64 && !read.contains(&a))));
+            if bl.len() != before {
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// See `optimize_inner`; first the scratch peephole, which is a candidate of its own.
+pub fn optimize(text: &str, mc: &Machine, inputs: &[Inputs], max_steps: u64) -> Option<String> {
+    let mut cur = text.to_string();
+    let mut changed = false;
+    if let Ok(p) = parse_program(&cur) {
+        let mut net = Net::from_program(&p);
+        if std::env::var_os("KOPT_NOPP").is_none() && spill_peephole(&mut net) {
+            cur = net.to_text();
+            changed = true;
+        }
+    }
+    match optimize_inner(&cur, mc, inputs, max_steps) {
+        Some(t) => Some(t),
+        None => {
+            if changed {
+                Some(cur)
+            } else {
+                None
+            }
+        }
     }
 }
