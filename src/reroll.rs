@@ -35,7 +35,7 @@ fn mix(h: u64, x: u64) -> u64 {
 enum Lits {
     Const(u32),
     /// c0 + j*delta (wrapping), optionally masked with `mask`
-    Affine { c0: u32, delta: u32, mask: Option<u32>, period: Option<usize> },
+    Affine { c0: u32, delta: u32, mask: Option<u32>, period: Option<usize>, bias: u32 },
     Periodic(Vec<u32>),
 }
 
@@ -67,14 +67,19 @@ fn classify(c: &[u32]) -> Option<Lits> {
     let delta = c[1].wrapping_sub(c[0]);
     let at = |j: usize| c[0].wrapping_add((j as u32).wrapping_mul(delta));
     if (0..n).all(|j| c[j] == at(j)) {
-        return Some(Lits::Affine { c0: c[0], delta, mask: None, period: None });
+        return Some(Lits::Affine { c0: c[0], delta, mask: None, period: None, bias: 0 });
     }
     let maxp = (n / 2).min(4096);
     let period = (2..=maxp).find(|&pi| (pi..n).all(|j| c[j] == c[j - pi]));
-    for k in 1..=31u32 {
-        let m = (1u32 << k) - 1;
-        if c[0] <= m && (0..n).all(|j| c[j] == at(j) & m) {
-            return Some(Lits::Affine { c0: c[0], delta, mask: Some(m), period });
+    // c_j = bias + ((c0' + j*delta) & mask): bias = the smallest value (an array base address)
+    let lo = *c.iter().min().unwrap();
+    for bias in if lo == 0 { vec![0] } else { vec![0, lo] } {
+        let d0 = c[0] - bias;
+        for k in 1..=31u32 {
+            let m = (1u32 << k) - 1;
+            if d0 <= m && (0..n).all(|j| c[j].wrapping_sub(bias) == d0.wrapping_add((j as u32).wrapping_mul(delta)) & m) {
+                return Some(Lits::Affine { c0: d0, delta, mask: Some(m), period, bias });
+            }
         }
     }
     period.map(|pi| Lits::Periodic(c[..pi].to_vec()))
@@ -338,7 +343,7 @@ fn body_size(plan: &Plan, g: usize) -> usize {
     let mut ref_c0: HashMap<u32, u32> = HashMap::new();
     for row in &plan.slots {
         for sl in row {
-            if let Slot::Lit(Lits::Affine { c0, delta, mask, .. }) = sl {
+            if let Slot::Lit(Lits::Affine { c0, delta, mask, bias, .. }) = sl {
                 ivs.insert(*delta);
                 let r = *ref_c0.entry(*delta).or_insert(*c0);
                 for m in 0..g {
@@ -347,7 +352,7 @@ fn body_size(plan: &Plan, g: usize) -> usize {
                         size += 1;
                     }
                     if mask.is_some() {
-                        size += 1;
+                        size += 1 + (*bias != 0) as usize;
                     }
                 }
             }
@@ -365,8 +370,8 @@ fn as_periodic(plan: &Plan) -> Plan {
         .map(|row| {
             row.iter()
                 .map(|sl| match sl {
-                    Slot::Lit(Lits::Affine { c0, delta, mask: Some(m), period: Some(pi) }) => {
-                        Slot::Lit(Lits::Periodic((0..*pi).map(|j| c0.wrapping_add((j as u32).wrapping_mul(*delta)) & m).collect()))
+                    Slot::Lit(Lits::Affine { c0, delta, mask: Some(m), period: Some(pi), bias }) => {
+                        Slot::Lit(Lits::Periodic((0..*pi).map(|j| bias.wrapping_add(c0.wrapping_add((j as u32).wrapping_mul(*delta)) & m)).collect()))
                     }
                     other => other.clone(),
                 })
@@ -495,7 +500,7 @@ fn apply(f: &mut Func, b: usize, plan: &Plan, g: usize) -> Option<(usize, usize)
                 let x = match sl {
                     Slot::Lit(Lits::Const(c)) => lit(*c as i64),
                     Slot::Lit(Lits::Periodic(v)) => lit(v[m % v.len()] as i64),
-                    Slot::Lit(Lits::Affine { c0, delta, mask, .. }) => {
+                    Slot::Lit(Lits::Affine { c0, delta, mask, bias, .. }) => {
                         let (iv, r) = iv_of[delta];
                         let kk = c0.wrapping_sub(r).wrapping_add((m as u32).wrapping_mul(*delta));
                         let mut x = iv;
@@ -508,6 +513,11 @@ fn apply(f: &mut Func, b: usize, plan: &Plan, g: usize) -> Option<(usize, usize)
                             let t = f.new_val();
                             body.push(Instr::new(Op::And, t, vec![x, lit(*mk as i64)], vec![]));
                             x = t;
+                            if *bias != 0 {
+                                let t = f.new_val();
+                                body.push(Instr::new(Op::Add, t, vec![x, lit(*bias as i64)], vec![]));
+                                x = t;
+                            }
                         }
                         x
                     }

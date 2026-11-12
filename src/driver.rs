@@ -413,6 +413,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         Err(_) => return Ok(text.to_string()),
     };
     prof("reference runs", &mut t);
+    large::set_count_inputs(rf.first_inputs(2));
     let mut s = Search {
         prog: &prog,
         mc,
@@ -604,9 +605,11 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     // Hot/cold layout (large.rs): the best setting again, with the loops moved in front of
     // run-once code. Needs no new mid-end run (the mids are kept).
     if size as i64 > mc.icache_size && !large::soft_expired() {
-        large::set_layout(1);
         let v = state.0;
-        s.run(&v, b0);
+        for lm in [1u8, 2] {
+            large::set_layout(lm);
+            s.run(&v, b0);
+        }
         large::set_layout(0);
     }
     // Rerolling of straight-line repetition (large.rs): one more candidate per mode, on the best
@@ -626,8 +629,10 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                     break;
                 }
                 s.run(&v, b0);
-                large::set_layout(1);
-                s.run(&v, b0);
+                for lm in [1u8, 2] {
+                    large::set_layout(lm);
+                    s.run(&v, b0);
+                }
                 large::set_layout(0);
             }
         }

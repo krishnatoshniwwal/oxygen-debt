@@ -189,7 +189,7 @@ def wrap(name, params, g):
 
 def gen_affine(size, rnd):
     """Repetitive straight-line code whose copies differ by affine constants: a load address that wraps
-    (i % 256), a stride constant (3*i+7) and a store address (1024 + i % 1500) change per copy
+    (i % 256), a stride constant (3*i+7) and a store address (1024 + i % 1024) change per copy
     (a rerolling target)."""
     g = Gen(2)
     ck = g.v()
@@ -202,7 +202,7 @@ def gen_affine(size, rnd):
         g.emit('mul %s, %s, v1' % (m, l))
         g.emit('add %s, %s, %d' % (s, m, 3 * i + 7))
         g.emit('xor %s, %s, v0' % (t, s))
-        g.emit('const %s, %d' % (o, 1024 + i % 1500))
+        g.emit('const %s, %d' % (o, 1024 + i % 1024))
         g.emit('store %s, %s' % (o, t))
         g.emit('add %s, %s, %s' % (n, ck, t))
         g.emit('mov %s, %s' % (ck, n))

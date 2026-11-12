@@ -6,6 +6,7 @@
 //! the output except the final deadline (which can only replace the result by an earlier,
 //! already verified candidate or by the unchanged input).
 use crate::evalsim::Reference;
+use std::collections::HashMap;
 use crate::kir::*;
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -185,46 +186,166 @@ pub fn pre_roll(f: &mut crate::ir::Func, mc: &Machine, ifc: usize) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Hot/cold layout
+// Hot/cold layout from exact dynamic counts
 // ---------------------------------------------------------------------------
 static LAYOUT: AtomicU8 = AtomicU8::new(0);
+static COUNT_INPUTS: Mutex<Vec<Inputs>> = Mutex::new(Vec::new());
 
+/// 0 = the classic chaining layout; 1 = exact counts; 2 = exact counts and a tiny entry block.
 pub fn set_layout(mode: u8) {
     LAYOUT.store(mode, Ordering::Relaxed);
 }
 
-/// Block order for the final program. Mode 0 = the classic chaining order. Mode 1 = the same, but
-/// when the entry block is a big piece of run-once code in front of the loops, a tiny entry block
-/// `jmp OLD` is put at index 0 and all loop blocks follow it, so that the code that runs most sits
-/// in the first `icache_size` slots and the run-once code moves behind it. (The entry block must
-/// stay at index 0; the extra jump costs one taken jump, once.)
+/// Inputs on which the program is simulated to count how often each block and edge runs.
+pub fn set_count_inputs(v: Vec<Inputs>) {
+    *COUNT_INPUTS.lock().unwrap_or_else(|e| e.into_inner()) = v;
+}
+
+struct Counts {
+    block: HashMap<usize, u64>,
+    edge: HashMap<(usize, usize), u64>,
+}
+
+/// Run the function (in its current block order) and count executions per block and per edge.
+fn exact_counts(f: &crate::ir::Func) -> Option<Counts> {
+    let inputs = COUNT_INPUTS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if inputs.is_empty() {
+        return None;
+    }
+    let text = crate::ir::to_text(f);
+    let prog = parse_program(&text).ok()?;
+    let cp = compile_program(&prog);
+    let n = prog.instrs.len();
+    let mut start = Vec::with_capacity(f.blocks.len());
+    let mut owner: Vec<usize> = Vec::with_capacity(n);
+    let mut last_pc: Vec<bool> = Vec::with_capacity(n);
+    for &b in &f.blocks {
+        let len = f.arena[b].ins.len();
+        start.push(owner.len());
+        for k in 0..len {
+            owner.push(b);
+            last_pc.push(k + 1 == len);
+        }
+    }
+    if owner.len() != n {
+        return None;
+    }
+    let mut block: HashMap<usize, u64> = HashMap::new();
+    let mut edge: HashMap<(usize, usize), u64> = HashMap::new();
+    let mut is_start = vec![false; n];
+    for &s in &start {
+        if s < n {
+            is_start[s] = true;
+        }
+    }
+    let cap = (6 * n as u64 + 1000).max(20_000);
+    for inp in &inputs {
+        let res = execute(&cp, inp, cap, true);
+        let tr = &res.trace;
+        for (i, &pc) in tr.iter().enumerate() {
+            let pc = pc as usize;
+            if is_start[pc] {
+                *block.entry(owner[pc]).or_insert(0) += 1;
+            }
+            if last_pc[pc] && i + 1 < tr.len() {
+                let nx = tr[i + 1] as usize;
+                *edge.entry((owner[pc], owner[nx])).or_insert(0) += 1;
+            }
+        }
+    }
+    Some(Counts { block, edge })
+}
+
+/// Block order for the final program (see DESIGN.md, "Hot/cold layout").
+///
+/// Mode 0: the classic order of backend::layout. Modes 1 and 2: blocks are chained along their
+/// *measured* hottest edges (a cold block is never chained to a hot one), and the chains are then
+/// ordered by how often their instructions run, so the code that runs most sits in the first
+/// `icache_size` slots and run-once or never-run code goes behind it. Mode 2 also puts a tiny
+/// block `jmp OLD_ENTRY` at index 0 (the entry block must be first), which lets the old entry
+/// code move behind the hot loops at the price of one taken jump.
 pub fn layout(f: &mut crate::ir::Func, mc: &Machine, profile: Option<&crate::backend::Profile>) {
     use crate::ir::*;
+    let _ = mc;
     crate::backend::layout(f, profile);
-    if LAYOUT.load(Ordering::Relaxed) == 0 {
+    let mode = LAYOUT.load(Ordering::Relaxed);
+    if mode == 0 {
         return;
     }
-    let c = mc.icache_size.max(1) as usize;
+    let counts = match exact_counts(f) {
+        Some(c) => c,
+        None => return,
+    };
     let entry = f.blocks[0];
-    if f.arena[entry].ins.len() < 4 || !f.arena[entry].preds.is_empty() {
-        return;
+    let order_idx: HashMap<usize, usize> = f.blocks.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+    let cnt = |b: usize| -> u64 { counts.block.get(&b).copied().unwrap_or(0) };
+    let nb = f.arena.len();
+    // ---- chains along measured edges ----
+    let mut edges: Vec<(u64, usize, usize, usize)> = Vec::new(); // (count, order, src, dst)
+    let mut k = 0;
+    for &b in &f.blocks {
+        for &s in f.arena[b].succs() {
+            let w = counts.edge.get(&(b, s)).copied().unwrap_or(0);
+            edges.push((w, k, b, s));
+            k += 1;
+        }
     }
-    let hot: Vec<usize> = f.blocks.iter().copied().filter(|&b| f.arena[b].depth >= 1).collect();
-    if hot.is_empty() || f.arena[entry].depth >= 1 {
-        return;
+    edges.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut chain_of: Vec<usize> = (0..nb).collect();
+    let mut chains: Vec<Option<Vec<usize>>> = vec![None; nb];
+    for &b in &f.blocks {
+        chains[b] = Some(vec![b]);
     }
-    let hot_size: usize = hot.iter().map(|&b| f.arena[b].ins.len()).sum();
-    // the split only helps when the run-once code in front would push the loops out of the cache
-    if hot_size + 1 > c {
-        return;
+    for (_, _, s, d) in edges {
+        if d == entry || s == d {
+            continue;
+        }
+        if (cnt(s) == 0) != (cnt(d) == 0) {
+            continue; // never join cold code to hot code
+        }
+        let (cs, cd) = (chain_of[s], chain_of[d]);
+        if cs == cd {
+            continue;
+        }
+        if *chains[cs].as_ref().unwrap().last().unwrap() != s || chains[cd].as_ref().unwrap()[0] != d {
+            continue;
+        }
+        let moved = chains[cd].take().unwrap();
+        for &x in &moved {
+            chain_of[x] = cs;
+        }
+        chains[cs].as_mut().unwrap().extend(moved);
     }
-    let hotset: HashSet<usize> = hot.iter().copied().collect();
-    let ne = f.new_block("entry");
-    f.arena[ne].ins.push(Instr::no_d(Op::Jmp, vec![], vec![entry]));
-    let rest: Vec<usize> = f.blocks.iter().copied().filter(|b| !hotset.contains(b)).collect();
-    let mut order = vec![ne];
-    order.extend(hot);
-    order.extend(rest);
-    f.blocks = order;
+    // ---- order the chains by instruction heat ----
+    let ec = chain_of[entry];
+    let heat = |c: usize| -> f64 {
+        let ch = chains[c].as_ref().unwrap();
+        let (mut run, mut size) = (0f64, 0f64);
+        for &x in ch {
+            let l = f.arena[x].ins.len() as f64;
+            run += cnt(x) as f64 * l;
+            size += l;
+        }
+        run / size.max(1.0)
+    };
+    let mut rest: Vec<usize> = (0..nb).filter(|&c| chains[c].is_some() && (mode == 2 || c != ec)).collect();
+    rest.sort_by(|&a, &b| {
+        heat(b)
+            .partial_cmp(&heat(a))
+            .unwrap()
+            .then(order_idx[&chains[a].as_ref().unwrap()[0]].cmp(&order_idx[&chains[b].as_ref().unwrap()[0]]))
+    });
+    let mut out: Vec<usize> = Vec::new();
+    if mode == 2 {
+        let ne = f.new_block("entry");
+        f.arena[ne].ins.push(Instr::no_d(Op::Jmp, vec![], vec![entry]));
+        out.push(ne);
+    } else {
+        out.extend(chains[ec].as_ref().unwrap().iter().copied());
+    }
+    for c in rest {
+        out.extend(chains[c].as_ref().unwrap().iter().copied());
+    }
+    f.blocks = out;
     compute_preds(f);
 }
