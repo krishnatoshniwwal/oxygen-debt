@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 mod backend;
+mod domain;
 mod driver;
 mod evalsim;
 mod ir;
@@ -8,6 +9,7 @@ mod passes;
 mod passes2;
 mod passes3;
 mod ranges;
+mod sccp;
 mod ssa;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};

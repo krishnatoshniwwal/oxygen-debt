@@ -7,6 +7,8 @@ use crate::passes;
 use crate::passes2;
 use crate::passes3;
 use crate::ranges::Ranges;
+use crate::domain;
+use crate::sccp;
 use crate::ssa;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -27,11 +29,12 @@ pub struct Variant {
     pub spill1: u8,  // >0: keep the n-th least-touched value live through the hottest blocks in scratch
     pub iv: bool,    // induction-variable rewrite of i + k in loops (and of the exit test)
     pub lazy: bool,  // lazy modular reduction of running sums in counted loops
+    pub sccp: bool,  // optimistic conditional constant propagation combined with the ranges
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, sccp: true }
     }
 }
 
@@ -93,6 +96,20 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
     let rounds = if f.count_instrs() > MID { 2 } else { 4 };
     for _ in 0..rounds {
         let mut lz = false;
+        let mut sc = false;
+        if v.sccp {
+            let rng = Ranges::new(f, 14);
+            if sccp::sccp(f, Some(&rng)) {
+                chk(f, "sccp");
+                scalar(f);
+                sc = true;
+            }
+            if domain::bits_simplify(f) {
+                chk(f, "bits_simplify");
+                scalar(f);
+                sc = true;
+            }
+        }
         if v.lazy {
             let rng = Ranges::new(f, 14);
             if passes3::lazy_mod(f, &rng) {
@@ -141,7 +158,7 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
             }
         }
         prof("  ifconv (+ranges, scalar)", &mut t);
-        if !(lz || c1 || c2 || c3 || c4) {
+        if !(sc || lz || c1 || c2 || c3 || c4) {
             break;
         }
     }
@@ -487,7 +504,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 consider(&mut s, &mut state, v);
             }
         }
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, sccp: false };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
@@ -533,6 +550,8 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, v);
         let v = Variant { lazy: !state.0.lazy, ..state.0 };
         consider(&mut s, &mut state, v);
+        let v = Variant { sccp: !state.0.sccp, ..state.0 };
+        consider(&mut s, &mut state, v);
         for be in BACKENDS[1..].iter() {
             if s.spent > WORK_BUDGET {
                 break;
@@ -567,6 +586,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { mac: !b.mac, ..b });
             nb.push(Variant { iv: !b.iv, ..b });
             nb.push(Variant { lazy: !b.lazy, ..b });
+            nb.push(Variant { sccp: !b.sccp, ..b });
             for s1 in [0u8, 1, 2] {
                 nb.push(Variant { spill1: s1, ..b });
             }
