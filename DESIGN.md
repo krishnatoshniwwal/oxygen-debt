@@ -437,3 +437,24 @@ latency goes from L to about L/k + log2 k (matters for `mul`/`mac`, latency 3). 
 add, mul, xor, and, or are associative and commutative in Z/2^32 with no exceptions, and every
 intermediate value is used only by the next link, so nothing else can see a changed value;
 no instruction that can trap or has an effect is touched. *Time:* linear per block.
+
+**Versioning of the guarded unroll** (part of `unroll_guarded`). When the ranges cannot prove
+a + (u-1)c and b below 2^31, the preheader computes `x = (a_first | b) >> 31` and branches: x = 0
+enters the front loop, x = 1 enters the original loop alone (the original loop now has two
+entrances, merged by phis). With both values below 2^31 at entry, a stays below b < 2^31 inside
+the front loop, so `a0 < b - (u-1)c` is exact as in the proven case. Costs 2-3 preheader ops.
+
+**Scalar replacement** (`loopopt::reuse_loads`, setting `sr`). In a chain loop with counter p
+stepping by s, `load(p + c)` of the next iteration reads the word `load(p + c + s)` read in this
+one. If the value ranges show that no store of the loop can write either word (store range
+and load range disjoint over all iterations), the earlier load becomes a header phi carrying
+the later load's value, with a copy in the preheader for the first iteration (re-proven
+trap-free on the rewritten function with a fresh range analysis, else dropped). Fixed-address
+store promotion is not implemented. On the bench neither this nor the versioning is chosen
+(the guarded unrolling and the memory pass already cover those loops, and the masks make the
+ranges provable); they exist for programs with unmasked bounds.
+
+Measured ablation (bench, 5 machines, the 3 perturbed inputs, total cycles; base 265,790):
+rotation only 263,658 (-0.8%); guarded unrolling only 259,336 (-2.4%); both 257,401 (-3.2%);
+all (with accumulator splitting) 256,352 (-3.6%). `KOPT_LOOPOPT=mask` (1 rot, 2 gu, 4 acc,
+8 sr) restricts the settings for such experiments.

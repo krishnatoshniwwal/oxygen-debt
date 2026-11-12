@@ -615,6 +615,11 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
     }
     fn consider2(s: &mut Search, state: &mut (Variant, Option<f64>), v: Variant) {
+        // developer aid: KOPT_LOOPOPT=mask limits the loopopt settings (1 rot, 2 gu, 4 acc, 8 sr)
+        let mask = std::env::var("KOPT_LOOPOPT").ok().and_then(|x| x.parse::<u32>().ok()).unwrap_or(15);
+        if (v.rot > 0 && mask & 1 == 0) || (v.gu > 0 && mask & 2 == 0) || (v.acc > 0 && mask & 4 == 0) || (v.sr && mask & 8 == 0) {
+            return;
+        }
         if s.spent > WORK_BUDGET * 2 {
             return;
         }
