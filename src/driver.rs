@@ -3,6 +3,8 @@ use crate::backend;
 use crate::evalsim::Reference;
 use crate::ir::{self, Func};
 use crate::kir::*;
+use crate::control;
+use crate::layout;
 use crate::passes;
 use crate::passes2;
 use crate::passes3;
@@ -27,11 +29,12 @@ pub struct Variant {
     pub spill1: u8,  // >0: keep the n-th least-touched value live through the hottest blocks in scratch
     pub iv: bool,    // induction-variable rewrite of i + k in loops (and of the exit test)
     pub lazy: bool,  // lazy modular reduction of running sums in counted loops
+    pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, thr: 0 }
     }
 }
 
@@ -152,6 +155,12 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     let mut t = prof_start();
     let mut f = ir::from_program(prog);
     let ic = mc.icache_size;
+    if v.thr > 0 && !light {
+        let cap = (3 * ic).max(64) as usize;
+        for r in control::state_registers(&f, v.thr as usize) {
+            control::split_by_state(&mut f, r, cap);
+        }
+    }
     ssa::build_ssa(&mut f);
     chk(&mut f, "build_ssa");
     prof("build_ssa", &mut t);
@@ -324,6 +333,38 @@ impl<'a> Search<'a> {
         }
     }
 
+    /// Block order by the TSP model of layout.rs (exact Held-Karp for small functions), scored
+    /// exactly like any other candidate. `f` is in the order that produced `cp`.
+    fn try_tsp(&mut self, f: &Func, cp: &Compiled, v: &Variant, be: Backend) -> Option<f64> {
+        let (prog, mc, profile, rf) = (self.prog, self.mc, self.profile, self.rf);
+        let r = catch_unwind(AssertUnwindSafe(|| -> Option<(String, Compiled, usize, f64)> {
+            let traces = rf.traces(cp);
+            let counts = layout::dyn_counts(f, cp, &traces);
+            let ord = layout::improve(f, mc, &counts, profile)?;
+            let mut g = f.clone();
+            g.blocks = ord;
+            let out = ir::to_text(&g);
+            if self.seen.contains_key(&out) {
+                return None;
+            }
+            let newprog = parse_program(&out).ok()?;
+            check_machine_features(&newprog, mc).ok()?;
+            if newprog.params.len() != prog.params.len() {
+                return None;
+            }
+            let cp2 = compile_program(&newprog);
+            let sc = rf.score(&cp2)?;
+            Some((out, cp2, newprog.instrs.len(), sc))
+        }));
+        self.spent += f.count_instrs() / 3;
+        if let Ok(Some((out, cp2, size, sc))) = r {
+            self.seen.insert(out.clone(), sc);
+            self.results.push(Cand { score: sc, size, order: self.n, text: out, cp: cp2, desc: format!("{:?} {:?} +tsp", v, be) });
+            return Some(sc);
+        }
+        None
+    }
+
     /// Score one (variant, backend) pair. Returns the score or None.
     fn run(&mut self, v: &Variant, be: Backend) -> Option<f64> {
         self.mid(v);
@@ -372,8 +413,9 @@ impl<'a> Search<'a> {
         match r {
             Ok(Ok((out, Some((cp, size, sc)), _))) => {
                 self.seen.insert(out.clone(), sc);
+                let tsp = self.try_tsp(&f, &cp, v, be);
                 self.results.push(Cand { score: sc, size, order: self.n, text: out, cp, desc: format!("{:?} {:?}", v, be) });
-                Some(sc)
+                Some(tsp.map_or(sc, |t| t.min(sc)))
             }
             Ok(Ok((_, None, sc))) => Some(sc),
             other => {
@@ -487,7 +529,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 consider(&mut s, &mut state, v);
             }
         }
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, thr: 0 };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
@@ -531,6 +573,10 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, v);
         let v = Variant { iv: !state.0.iv, ..state.0 };
         consider(&mut s, &mut state, v);
+        for t in [1u8, 2] {
+            let v = Variant { thr: t, ..state.0 };
+            consider(&mut s, &mut state, v);
+        }
         let v = Variant { lazy: !state.0.lazy, ..state.0 };
         consider(&mut s, &mut state, v);
         for be in BACKENDS[1..].iter() {
@@ -567,6 +613,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { mac: !b.mac, ..b });
             nb.push(Variant { iv: !b.iv, ..b });
             nb.push(Variant { lazy: !b.lazy, ..b });
+            for t in [0u8, 1, 2] {
+                nb.push(Variant { thr: t, ..b });
+            }
             for s1 in [0u8, 1, 2] {
                 nb.push(Variant { spill1: s1, ..b });
             }

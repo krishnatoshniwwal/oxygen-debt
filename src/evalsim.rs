@@ -116,6 +116,18 @@ impl Reference {
         Some(tot)
     }
 
+    /// Execution traces of a candidate on the timing inputs (for edge counts in layout.rs).
+    pub fn traces(&self, cp: &Compiled) -> Vec<Vec<u32>> {
+        let mut out = Vec::new();
+        for (inp, rf, _) in &self.timing {
+            let res = execute(cp, inp, 4 * rf.steps + 1000, true);
+            if res.outcome != Outcome::Timeout {
+                out.push(res.trace);
+            }
+        }
+        out
+    }
+
     /// Total cycles of the input program over the timing inputs, or None if there are no
     /// timing inputs (then candidates cannot be compared with the input).
     pub fn base(&self) -> Option<f64> {

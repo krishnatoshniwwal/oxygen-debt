@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 mod backend;
+mod control;
 mod driver;
 mod evalsim;
 mod ir;
 mod kir;
+mod layout;
 mod passes;
 mod passes2;
 mod passes3;
