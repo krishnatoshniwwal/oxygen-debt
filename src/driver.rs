@@ -10,6 +10,9 @@ use crate::passes2;
 use crate::passes3;
 use crate::ranges::Ranges;
 use crate::sched2;
+use crate::domain;
+use crate::reassoc;
+use crate::sccp;
 use crate::ssa;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -35,12 +38,15 @@ pub struct Variant {
     pub acc: u8,     // accumulator splitting (loopopt): 0 = off, else at most this many partial chains
     pub sr: bool,    // scalar replacement of loads across iterations (loopopt)
     pub alg: u8,     // loop algebra (algebra.rs), bit 1 = closed forms of polynomial loops
+    pub thr: bool,   // tree-height reduction of add/mul/xor/and/or chains
+    pub sccp: bool,  // optimistic conditional constant propagation combined with the ranges
 }
 
 impl Default for Variant {
     fn default() -> Variant {
         Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false }
         Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, alg: 0 }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, thr: false, sccp: true }
     }
 }
 
@@ -102,6 +108,20 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
     let rounds = if f.count_instrs() > MID { 2 } else { 4 };
     for _ in 0..rounds {
         let mut lz = false;
+        let mut sc = false;
+        if v.sccp {
+            let rng = Ranges::new(f, 14);
+            if sccp::sccp(f, Some(&rng)) {
+                chk(f, "sccp");
+                scalar(f);
+                sc = true;
+            }
+            if domain::bits_simplify(f) {
+                chk(f, "bits_simplify");
+                scalar(f);
+                sc = true;
+            }
+        }
         if v.lazy {
             let rng = Ranges::new(f, 14);
             if passes3::lazy_mod(f, &rng) {
@@ -166,7 +186,7 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
             }
         }
         prof("  ifconv (+ranges, scalar)", &mut t);
-        if !(lz || c1 || c2 || c3 || c4) {
+        if !(sc || lz || c1 || c2 || c3 || c4) {
             break;
         }
     }
@@ -232,6 +252,10 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
         }
     }
     prof("unroll, ranges, dce", &mut t);
+    if v.thr {
+        reassoc::reassoc(&mut f);
+        chk(&mut f, "reassoc");
+    }
     passes2::lower(&mut f, mc, v.mac);
     let srv = std::env::var_os("KOPT_FORCE_SR").is_some() || v.sr;
     if srv && !light {
@@ -541,6 +565,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
         let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false };
         let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, alg: 0 };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, thr: false, sccp: false };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
@@ -586,6 +611,10 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, v);
         let v = Variant { lazy: !state.0.lazy, ..state.0 };
         consider(&mut s, &mut state, v);
+        let v = Variant { sccp: !state.0.sccp, ..state.0 };
+        consider(&mut s, &mut state, v);
+        let v = Variant { thr: !state.0.thr, ..state.0 };
+        consider(&mut s, &mut state, v);
         for be in BACKENDS[1..].iter() {
             if s.spent > WORK_BUDGET {
                 break;
@@ -622,6 +651,8 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { lazy: !b.lazy, ..b });
             nb.push(Variant { alg: b.alg ^ 1, ..b });
             nb.push(Variant { alg: b.alg ^ 2, ..b });
+            nb.push(Variant { sccp: !b.sccp, ..b });
+            nb.push(Variant { thr: !b.thr, ..b });
             for s1 in [0u8, 1, 2] {
                 nb.push(Variant { spill1: s1, ..b });
             }

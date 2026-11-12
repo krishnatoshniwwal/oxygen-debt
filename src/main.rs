@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 mod algebra;
 mod backend;
+mod domain;
 mod driver;
 mod evalsim;
 mod ir;
@@ -11,6 +12,8 @@ mod passes2;
 mod passes3;
 mod ranges;
 mod sched2;
+mod reassoc;
+mod sccp;
 mod ssa;
 mod validate;
 mod vgraph;
