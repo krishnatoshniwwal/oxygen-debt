@@ -379,3 +379,82 @@ kopt's own inputs. Without a profile only the static estimate is used.
 * With odd control flow (loops with two entrances) a value can end up defined in terms of
   itself. kopt does not simplify such values, and the rewrite rules and the replacement map
   have loop guards, because an earlier version could loop forever on them.
+
+---
+
+## 8. Loop transformations for arrays and counted loops (`src/loopopt.rs`)
+
+Both passes work on SSA, are optional settings of the search (`rot`, `gu`), and run after
+the general search on its final setting, so they can only add candidates; a candidate is
+still written only if the exact timing model says it beats the input.
+
+**Latency rotation** (`loopopt::rotate_loops`, setting `rot` 1 or 2; runs after lowering,
+before speculation and scheduling). *What:* in a loop that is a plain chain of blocks
+(header, straight body, one latch), a set S of instructions (long-latency roots: `load`,
+`mul`, `mac`, `div`, `mod`, plus everything inside the loop they need) is moved to the end of
+the previous iteration. Each value x in S becomes a header phi `q_x = phi(x_prologue,
+x_tail)`; `x_tail` is a copy of x placed before the back edge whose operands are the *next*
+iteration's values (a header phi p is replaced by its back operand), `x_prologue` is a copy at
+the end of the preheader whose operands are the initial values. So `min(lat, 1+P)` of the
+latency runs inside the fence of the taken back edge. One stage only: code cost is one
+copy of S in the preheader. *Choice of S:* with at most 5 roots, every union of root
+closures (at most 31 sets) is scored with a small exact model of the loop (list schedule per
+block like `passes3::schedule`, then the Kiln issue rules over 6 and 24 iterations: issue
+width, memory ports, latencies, fence, plus a penalty for more live values than registers);
+the best set is used only if it beats the empty set. Above 5 roots the fixed rules
+"all roots", "loads only", "everything but div/mod" are scored instead (`rot` 2 forces "all
+roots"). The search then measures the real candidate. *Time:* per loop at most 31 model runs
+plus up to 3 range analyses; loops of more than 90 instructions or 12 blocks are skipped.
+*Why safe:* (1) pure instructions may run any number of extra times; (2) a `load`, `div` or
+`mod` in S runs one extra time after the last iteration and once in the preheader even when the
+loop runs zero times, so every copy is re-proven trap-free on the *rewritten* function
+(fresh value-range analysis: load address < 4096, divisor >= 1); otherwise the rewrite is
+dropped; (3) a load is only moved when no store of the loop that comes earlier in the body
+may write its word (same memory model as the scheduler), because the early load now runs
+before those stores; (4) a trapping instruction whose value is unused would vanish, so such a
+set is rejected; (5) `vload`, `store`, `vstore` are never moved.
+
+**Guarded unrolling** (`loopopt::unroll_guarded`, setting `gu` = 2, 4, 8; runs after the
+`unroll` step of the SSA pipeline, followed by another SSA optimisation round). *What:* a
+loop `while (a < b) body` (header with the test and no effect, straight-line body, `a` =
+header phi + constant, the phi stepping by a constant c in 1..64, `b` loop-invariant) gets a
+front loop that runs u bodies per test: `while (a0 + (u-1)c < b) { body x u }`, and then
+falls into the original loop, which finishes the remainder. `b - (u-1)c` is computed once in
+the preheader. The u copies are one straight block, so the scheduler overlaps them and the
+memory pass reuses loads between them. *Why safe:* only done when the value ranges prove
+a + (u-1)c < 2^31 and b < 2^31, so `a0 < b - (u-1)c` is exactly "all u tests would pass" (no
+wrap-around); the header has no effect (it runs once more at the seam); the original loop is
+kept unchanged as the remainder, so every exit and trap happens as before. *Time:* linear in
+the loop size times u; loops with u x size > 400 are skipped.
+
+**Accumulator splitting** (`loopopt::split_accumulators`, setting `acc` = 2 or 4; runs right
+after rotation, after lowering). *What:* inside one block, a chain `x1 = x0 (+) t1; x2 = x1 (+)
+t2; ...` of at least 4 links of the same operation (add, mul, xor, and, or, or `mac` read as
+acc + a*b), whose intermediate values have no other use, is cut into k = min(acc, L/2)
+interleaved chains (the second one starts from its first term, a `mac` chain from a `mul`),
+combined by a small tree; the last combine keeps the original value's name. The loop-carried
+latency goes from L to about L/k + log2 k (matters for `mul`/`mac`, latency 3). *Why safe:*
+add, mul, xor, and, or are associative and commutative in Z/2^32 with no exceptions, and every
+intermediate value is used only by the next link, so nothing else can see a changed value;
+no instruction that can trap or has an effect is touched. *Time:* linear per block.
+
+**Versioning of the guarded unroll** (part of `unroll_guarded`). When the ranges cannot prove
+a + (u-1)c and b below 2^31, the preheader computes `x = (a_first | b) >> 31` and branches: x = 0
+enters the front loop, x = 1 enters the original loop alone (the original loop now has two
+entrances, merged by phis). With both values below 2^31 at entry, a stays below b < 2^31 inside
+the front loop, so `a0 < b - (u-1)c` is exact as in the proven case. Costs 2-3 preheader ops.
+
+**Scalar replacement** (`loopopt::reuse_loads`, setting `sr`). In a chain loop with counter p
+stepping by s, `load(p + c)` of the next iteration reads the word `load(p + c + s)` read in this
+one. If the value ranges show that no store of the loop can write either word (store range
+and load range disjoint over all iterations), the earlier load becomes a header phi carrying
+the later load's value, with a copy in the preheader for the first iteration (re-proven
+trap-free on the rewritten function with a fresh range analysis, else dropped). Fixed-address
+store promotion is not implemented. On the bench neither this nor the versioning is chosen
+(the guarded unrolling and the memory pass already cover those loops, and the masks make the
+ranges provable); they exist for programs with unmasked bounds.
+
+Measured ablation (bench, 5 machines, the 3 perturbed inputs, total cycles; base 265,790):
+rotation only 263,658 (-0.8%); guarded unrolling only 259,336 (-2.4%); both 257,401 (-3.2%);
+all (with accumulator splitting) 256,352 (-3.6%). `KOPT_LOOPOPT=mask` (1 rot, 2 gu, 4 acc,
+8 sr) restricts the settings for such experiments.

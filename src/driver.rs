@@ -3,6 +3,7 @@ use crate::backend;
 use crate::evalsim::Reference;
 use crate::ir::{self, Func};
 use crate::kir::*;
+use crate::loopopt;
 use crate::passes;
 use crate::passes2;
 use crate::passes3;
@@ -27,11 +28,15 @@ pub struct Variant {
     pub spill1: u8,  // >0: keep the n-th least-touched value live through the hottest blocks in scratch
     pub iv: bool,    // induction-variable rewrite of i + k in loops (and of the exit test)
     pub lazy: bool,  // lazy modular reduction of running sums in counted loops
+    pub rot: u8,     // latency rotation of loops (loopopt): 0 = off, 1 = best set by the model, 2 = all long-latency work
+    pub gu: u8,      // guarded unrolling (loopopt): 0 = off, else u bodies per test
+    pub acc: u8,     // accumulator splitting (loopopt): 0 = off, else at most this many partial chains
+    pub sr: bool,    // scalar replacement of loads across iterations (loopopt)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false }
     }
 }
 
@@ -184,6 +189,13 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
         ssa::build_ssa(&mut f);
         phase_a(&mut f, v, false);
     }
+    let guv = std::env::var("KOPT_FORCE_GU").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.gu);
+    if guv > 1 && !light {
+        if loopopt::unroll_guarded(&mut f, guv as usize) {
+            chk(&mut f, "unroll_guarded");
+            phase_a(&mut f, v, false);
+        }
+    }
     let mut rng = Ranges::new(&mut f, if light { 6 } else { 14 });
     passes::dce(&mut f, Some(&rng));
     passes::cleanup_cfg(&mut f);
@@ -201,6 +213,21 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     }
     prof("unroll, ranges, dce", &mut t);
     passes2::lower(&mut f, mc, v.mac);
+    let srv = std::env::var_os("KOPT_FORCE_SR").is_some() || v.sr;
+    if srv && !light {
+        loopopt::reuse_loads(&mut f);
+        chk(&mut f, "reuse_loads");
+    }
+    let rotv = std::env::var("KOPT_FORCE_ROT").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.rot);
+    if rotv > 0 && !light {
+        loopopt::rotate_loops(&mut f, mc, rotv);
+        chk(&mut f, "rotate_loops");
+    }
+    let accv = std::env::var("KOPT_FORCE_ACC").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.acc);
+    if accv > 1 {
+        loopopt::split_accumulators(&mut f, accv as usize);
+        chk(&mut f, "split_accumulators");
+    }
     if v.sched {
         if !light {
             rng = Ranges::new(&mut f, 14);
@@ -487,7 +514,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 consider(&mut s, &mut state, v);
             }
         }
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
@@ -580,6 +607,70 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             }
             for be in BACKENDS[1..].iter() {
                 if s.spent > WORK_BUDGET {
+                    break;
+                }
+                let v = state.0;
+                s.run(&v, *be);
+            }
+        }
+    }
+    fn consider2(s: &mut Search, state: &mut (Variant, Option<f64>), v: Variant) {
+        // developer aid: KOPT_LOOPOPT=mask limits the loopopt settings (1 rot, 2 gu, 4 acc, 8 sr)
+        let mask = std::env::var("KOPT_LOOPOPT").ok().and_then(|x| x.parse::<u32>().ok()).unwrap_or(15);
+        if (v.rot > 0 && mask & 1 == 0) || (v.gu > 0 && mask & 2 == 0) || (v.acc > 0 && mask & 4 == 0) || (v.sr && mask & 8 == 0) {
+            return;
+        }
+        if s.spent > WORK_BUDGET * 2 {
+            return;
+        }
+        if let Some(sc) = s.run(&v, BACKENDS[0]) {
+            if state.1.map_or(true, |b| sc < b - 1e-9) {
+                *state = (v, Some(sc));
+            }
+        }
+    }
+    if size <= MID {
+        // Loop transformations of loopopt.rs. They run after the general search, on its final
+        // setting, so that they can only add candidates (never change the path of the walk).
+        let b = state.0;
+        let mut tries: Vec<Variant> = Vec::new();
+        for g in [2u8, 4, 8] {
+            tries.push(Variant { gu: g, ..b });
+            tries.push(Variant { gu: g, unroll: 1, ..b });
+        }
+        for r in [1u8, 2] {
+            tries.push(Variant { rot: r, ..b });
+            tries.push(Variant { rot: r, unroll: 1, ..b });
+        }
+        for a in [2u8, 4] {
+            tries.push(Variant { acc: a, ..b });
+        }
+        tries.push(Variant { sr: true, ..b });
+        tries.push(Variant { sr: true, unroll: 1, ..b });
+        let before = state.0;
+        for v in tries {
+            consider2(&mut s, &mut state, v);
+        }
+        // combine: rotation on top of the best guarded unrolling and the other way round
+        let b2 = state.0;
+        if b2 != before {
+            for r in [0u8, 1, 2] {
+                consider2(&mut s, &mut state, Variant { rot: r, ..b2 });
+            }
+            for g in [0u8, 2, 4, 8] {
+                let cur = state.0;
+                consider2(&mut s, &mut state, Variant { gu: g, ..cur });
+            }
+            for a in [0u8, 2, 4] {
+                let cur = state.0;
+                consider2(&mut s, &mut state, Variant { acc: a, ..cur });
+            }
+            for sr in [false, true] {
+                let cur = state.0;
+                consider2(&mut s, &mut state, Variant { sr, ..cur });
+            }
+            for be in BACKENDS[1..].iter() {
+                if s.spent > WORK_BUDGET * 2 {
                     break;
                 }
                 let v = state.0;
