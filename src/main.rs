@@ -8,6 +8,7 @@ mod passes;
 mod passes2;
 mod passes3;
 mod ranges;
+mod sched2;
 mod ssa;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};

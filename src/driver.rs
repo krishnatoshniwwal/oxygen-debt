@@ -7,6 +7,7 @@ use crate::passes;
 use crate::passes2;
 use crate::passes3;
 use crate::ranges::Ranges;
+use crate::sched2;
 use crate::ssa;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -587,6 +588,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             }
         }
     }
+    post_sched2(&mut s);
     let mut order: Vec<usize> = (0..s.results.len()).collect();
     order.sort_by(|&a, &b| {
         let (x, y) = (&s.results[a], &s.results[b]);
@@ -613,4 +615,51 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     }
     eprintln!("kopt: writing the input unchanged");
     Ok(text.to_string())
+}
+
+/// sched2 (exact-cost reordering and renaming) on the best candidates found so far. Each result
+/// is a new candidate: it is kept only if it measures faster, like every other candidate.
+fn post_sched2(s: &mut Search) {
+    if s.size > MID || s.results.is_empty() {
+        return;
+    }
+    let inputs = s.rf.timing_inputs();
+    if inputs.is_empty() {
+        return;
+    }
+    let mut idx: Vec<usize> = (0..s.results.len()).collect();
+    idx.sort_by(|&a, &b| {
+        let (x, y) = (&s.results[a], &s.results[b]);
+        x.score.partial_cmp(&y.score).unwrap().then(x.size.cmp(&y.size)).then(x.order.cmp(&y.order))
+    });
+    let mc = s.mc;
+    let nparams = s.prog.params.len();
+    for &i in idx.iter().take(3) {
+        let text = s.results[i].text.clone();
+        let r = catch_unwind(AssertUnwindSafe(|| sched2::optimize(&text, mc, &inputs, 4_000_000)));
+        let t2 = match r {
+            Ok(Some(t)) => t,
+            _ => continue,
+        };
+        if s.seen.contains_key(&t2) {
+            continue;
+        }
+        let rf = s.rf;
+        let ok = catch_unwind(AssertUnwindSafe(|| -> Option<(Compiled, usize, f64)> {
+            let np = parse_program(&t2).ok()?;
+            check_machine_features(&np, mc).ok()?;
+            if np.params.len() != nparams {
+                return None;
+            }
+            let cp = compile_program(&np);
+            let sc = rf.score(&cp)?;
+            Some((cp, np.instrs.len(), sc))
+        }));
+        if let Ok(Some((cp, size, sc))) = ok {
+            s.n += 1;
+            s.seen.insert(t2.clone(), sc);
+            let desc = format!("sched2 of {}", s.results[i].desc);
+            s.results.push(Cand { score: sc, size, order: s.n, text: t2, cp, desc });
+        }
+    }
 }
