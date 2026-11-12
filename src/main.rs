@@ -4,6 +4,7 @@ mod driver;
 mod evalsim;
 mod ir;
 mod kir;
+mod loopopt;
 mod passes;
 mod passes2;
 mod passes3;
