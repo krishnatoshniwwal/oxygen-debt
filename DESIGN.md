@@ -575,3 +575,12 @@ faithful copy and every new edge an old edge, so the transformation is correct w
 tracking believes; the SSA passes then fold `eq state, K` in each copy and the dispatch
 disappears (vending_fsm -30 % cycles). Growth is capped at 3 * icache_size instructions (nothing
 changes if more would be added); the search measures it like every other knob.
+
+**Node splitting** (`control::split_entries`, always on, no effect unless a cycle has two
+entrances). A cycle (strongly connected component) entered at several blocks is irreducible, so
+no loop pass touches it. The first entrance (lowest block id) stays the header; every other
+entrance block E (<= 24 instructions) gets a copy E' that takes over all edges from outside the
+cycle. E' is outside the cycle, which now has one entrance. Pure block copying. On
+`irreducible_loop`: 416 -> 200 cycles at P=4 and 608 -> 216 at P=8 (variants; the original was
+slower than the input there before). Tried and dropped: a larger tail-copy size (24) as an extra
+back end changed no result on P in {0,4,8}.

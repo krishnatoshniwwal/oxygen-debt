@@ -198,12 +198,16 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func, String> {
     let mut t = prof_start();
     let ic = mc.icache_size;
-    let mut f = if v.thr > 0 && !light {
-        // DFA state splitting (control.rs) works before SSA, so it bypasses large.rs's cached start
-        let mut f = ir::from_program(prog);
+    let mut irr_f = if light { None } else { let mut g = ir::from_program(prog); if control::has_multi_entry(&mut g) { Some(g) } else { None } };
+    let mut f = if (v.thr > 0 || irr_f.is_some()) && !light {
+        // DFA state splitting and node splitting (control.rs) work before SSA, so they bypass large.rs's cached start
+        let mut f = irr_f.take().unwrap_or_else(|| ir::from_program(prog));
+        control::split_entries(&mut f, 24);
         let cap = (3 * ic).max(64) as usize;
-        for r in control::state_registers(&f, v.thr as usize) {
-            control::split_by_state(&mut f, r, cap);
+        if v.thr > 0 {
+            for r in control::state_registers(&f, v.thr as usize) {
+                control::split_by_state(&mut f, r, cap);
+            }
         }
         ssa::build_ssa(&mut f);
         f
@@ -336,7 +340,7 @@ const MID: usize = 6000;
 const BIG: usize = 300_000;
 
 // (maxdup, unroll factor, loose code-size budget)
-const BACKENDS: [(usize, usize, bool); 11] = [
+const BACKENDS: [(usize, usize, bool); 9] = [
     (4, 1, false),
     (0, 1, false),
     (12, 1, false),
@@ -345,8 +349,6 @@ const BACKENDS: [(usize, usize, bool); 11] = [
     (4, 8, false),
     (4, 2, true),
     (12, 2, false),
-    (24, 1, false),
-    (24, 1, true),
     (12, 1, true),
 ];
 
