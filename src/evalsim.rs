@@ -121,6 +121,8 @@ impl Reference {
     /// The timing inputs (clones), for passes that tune against the real execution.
     pub fn timing_inputs(&self) -> Vec<Inputs> {
         self.timing.iter().map(|t| t.0.clone()).collect()
+    }
+
     /// Execution traces of a candidate on the timing inputs (for edge counts in layout.rs).
     pub fn traces(&self, cp: &Compiled) -> Vec<Vec<u32>> {
         let mut out = Vec::new();

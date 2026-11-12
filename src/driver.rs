@@ -41,17 +41,14 @@ pub struct Variant {
     pub acc: u8,     // accumulator splitting (loopopt): 0 = off, else at most this many partial chains
     pub sr: bool,    // scalar replacement of loads across iterations (loopopt)
     pub alg: u8,     // loop algebra (algebra.rs), bit 1 = closed forms of polynomial loops
-    pub thr: bool,   // tree-height reduction of add/mul/xor/and/or chains
+    pub tree: bool,  // tree-height reduction of add/mul/xor/and/or chains
     pub sccp: bool,  // optimistic conditional constant propagation combined with the ranges
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false }
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, alg: 0 }
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, thr: false, sccp: true }
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, thr: 0 }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0 }
     }
 }
 
@@ -201,14 +198,18 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func, String> {
     let mut t = prof_start();
     let ic = mc.icache_size;
-    if v.thr > 0 && !light {
+    let mut f = if v.thr > 0 && !light {
+        // DFA state splitting (control.rs) works before SSA, so it bypasses large.rs's cached start
+        let mut f = ir::from_program(prog);
         let cap = (3 * ic).max(64) as usize;
         for r in control::state_registers(&f, v.thr as usize) {
             control::split_by_state(&mut f, r, cap);
         }
-    }
-    ssa::build_ssa(&mut f);
-    let mut f = large::start_func(prog, mc, v.ifc);
+        ssa::build_ssa(&mut f);
+        f
+    } else {
+        large::start_func(prog, mc, v.ifc)
+    };
     chk(&mut f, "build_ssa");
     prof("build_ssa (+reroll)", &mut t);
     phase_a(&mut f, v, light);
@@ -263,7 +264,7 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
         }
     }
     prof("unroll, ranges, dce", &mut t);
-    if v.thr {
+    if v.tree {
         reassoc::reassoc(&mut f);
         chk(&mut f, "reassoc");
     }
@@ -678,10 +679,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 consider(&mut s, &mut state, v);
             }
         }
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false };
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, alg: 0 };
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, thr: false, sccp: false };
-        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, thr: 0 };
+        let v = Variant { peel: 0, unroll: 1, ifc: 0, sched: false, spill: state.0.spill, mac: true, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, sccp: false, ..Variant::default() };
         consider(&mut s, &mut state, v);
         for u in [2, 4, 8] {
             let v = Variant { unroll: u, ..state.0 };
@@ -733,7 +731,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, v);
         let v = Variant { sccp: !state.0.sccp, ..state.0 };
         consider(&mut s, &mut state, v);
-        let v = Variant { thr: !state.0.thr, ..state.0 };
+        let v = Variant { tree: !state.0.tree, ..state.0 };
         consider(&mut s, &mut state, v);
         for be in BACKENDS[1..].iter() {
             if s.spent > WORK_BUDGET {
@@ -772,7 +770,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { alg: b.alg ^ 1, ..b });
             nb.push(Variant { alg: b.alg ^ 2, ..b });
             nb.push(Variant { sccp: !b.sccp, ..b });
-            nb.push(Variant { thr: !b.thr, ..b });
+            nb.push(Variant { tree: !b.tree, ..b });
             for t in [0u8, 1, 2] {
                 nb.push(Variant { thr: t, ..b });
             }

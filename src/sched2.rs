@@ -994,7 +994,7 @@ impl<'a> Opt<'a> {
 
     fn try_order(&mut self, reg: &Region, order: &[usize], wins: &[Window]) -> Option<(i64, Vec<Ins>)> {
         let mut names: Vec<i32> = Vec::new();
-        reg.name_block(order, &self.sim, &mut names);
+        reg.name_block(order, &self.sim, &mut names, 0);
         if names.len() != reg.n {
             return None;
         }
