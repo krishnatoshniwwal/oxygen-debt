@@ -402,3 +402,12 @@ spread of operands, and with random 32-bit vectors: every concrete result is con
 analysis narrows the intervals of `Ranges::new` (intersection of two true facts).
 Not done yet: wrapped intervals, non-power-of-two strides, relational facts, affine
 dependence tests, PRE, memory phis, code motion, tree-height reduction, extra rewrite rules.
+
+**Tree-height reduction** (`reassoc::reassoc`, setting `thr`; runs just before lowering). A chain
+is the tree of same-op instructions (add, mul, xor, and, or) in one block whose inner results
+have exactly one use. Its leaves are regrouped by repeatedly combining the two earliest-ready
+values (phis, i.e. loop-carried accumulators, count as latest, so `acc + a + b + c + d` becomes
+`acc + ((a + b) + (c + d))`); literals are folded into one. Safe because these ops are
+associative and commutative modulo 2^32 and every leaf is defined before the chain root,
+where the new instructions are placed. Measured: 12 bench cases faster, none slower
+(about -1% on `wide_fast`); fuzz clean.

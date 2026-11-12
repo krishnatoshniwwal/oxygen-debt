@@ -9,6 +9,7 @@ mod passes;
 mod passes2;
 mod passes3;
 mod ranges;
+mod reassoc;
 mod sccp;
 mod ssa;
 
