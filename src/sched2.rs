@@ -993,14 +993,20 @@ impl<'a> Opt<'a> {
     }
 
     fn try_order(&mut self, reg: &Region, order: &[usize], wins: &[Window]) -> Option<(i64, Vec<Ins>)> {
-        let mut names: Vec<i32> = Vec::new();
-        reg.name_block(order, &self.sim, &mut names);
-        if names.len() != reg.n {
-            return None;
+        let mut best: Option<(i64, Vec<Ins>)> = None;
+        for mode in 0..2u8 {
+            let mut names: Vec<i32> = Vec::new();
+            reg.name_block(order, &self.sim, &mut names, mode);
+            if names.len() != reg.n {
+                continue;
+            }
+            let code = reg.apply(order, &names);
+            let c = self.eval(reg.b, code.clone(), wins);
+            if best.as_ref().map_or(true, |x| c < x.0) {
+                best = Some((c, code));
+            }
         }
-        let code = reg.apply(order, &names);
-        let c = self.eval(reg.b, code.clone(), wins);
-        Some((c, code))
+        best
     }
 
     /// Cycle-driven list scheduling on a light model: among the ready instructions take the
