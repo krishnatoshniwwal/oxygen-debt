@@ -6,7 +6,7 @@ program: run ./kopt, check that the output behaves like the input on many inputs
 the output text with the Python reference's output (they should be identical).
 Usage: python3 tests/fuzz_cli.py [--n 300] [--seed 1] [--jobs 10]
 """
-import argparse, os, random, signal, subprocess, sys
+import argparse, os, random, subprocess, sys
 from concurrent.futures import ProcessPoolExecutor
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -15,7 +15,6 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(ROOT, 'pyref', 'src'))
 sys.path.insert(0, os.path.join(ROOT, 'pyref', 'tests'))
 import kirlib as K  # noqa: E402
-import driver  # noqa: E402
 import fuzz  # noqa: E402
 
 
@@ -63,20 +62,13 @@ def one(args):
         if diff:
             res['problems'].append('MISMATCH input #%d: %s' % (k, diff))
             break
-    def alarm(*_):
-        raise TimeoutError()
-    signal.signal(signal.SIGALRM, alarm)
-    signal.alarm(20)
     try:
-        py = driver.optimize(text, mc, None, driver.Options())
-        if py != out:
+        q = subprocess.run([sys.executable, os.path.join(ROOT, 'pyref', 'kopt'), base + '.kir', '--machine', base + '.cfg',
+                            '-o', base + '.py'], capture_output=True, text=True, timeout=30)
+        if q.returncode == 0 and open(base + '.py').read() != out:
             res['problems'].append('text differs from python reference')
-    except TimeoutError:
+    except subprocess.TimeoutExpired:
         res['note'] = 'python reference timed out'
-    except Exception as e:  # noqa
-        res['problems'].append('python reference raised %s' % e)
-    finally:
-        signal.alarm(0)
     return res
 
 
