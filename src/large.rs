@@ -31,6 +31,12 @@ pub fn soft_expired() -> bool {
     elapsed_ms() >= *SOFT_LIMIT_MS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// True when another step that takes about `cost_ms` still fits in half of the soft limit.
+pub fn fits_half(cost_ms: u64) -> bool {
+    let soft = *SOFT_LIMIT_MS.lock().unwrap_or_else(|e| e.into_inner());
+    soft == u64::MAX || elapsed_ms() + cost_ms <= soft / 2
+}
+
 /// Hard deadline in milliseconds for an input of this many instructions. Normal programs get
 /// 5 s from the judges, the very large ones 30 s; both include start-up.
 pub fn hard_limit_ms(ninstr: usize) -> u64 {
@@ -348,4 +354,36 @@ pub fn layout(f: &mut crate::ir::Func, mc: &Machine, profile: Option<&crate::bac
     }
     f.blocks = out;
     compute_preds(f);
+}
+
+// ---------------------------------------------------------------------------
+// The SSA function the pipeline starts from, cached per rerolling mode (the search runs the
+// pipeline many times on the same input; building and rerolling a 100,000-instruction function
+// is a large part of each run).
+// ---------------------------------------------------------------------------
+type StartKey = (u8, usize, i64);
+static START_CACHE: Mutex<Vec<(StartKey, crate::ir::Func, bool)>> = Mutex::new(Vec::new());
+
+/// The SSA function to start from, and whether rerolling changed it (always false in mode 0).
+pub fn start_func_ex(prog: &Program, mc: &Machine, ifc: usize) -> (crate::ir::Func, bool) {
+    let mode = roll_mode();
+    let key: StartKey = (mode, if mode > 0 { ifc } else { 0 }, mc.icache_size);
+    {
+        let g = START_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, f, r)) = g.iter().find(|(k, _, _)| *k == key) {
+            return (f.clone(), *r);
+        }
+    }
+    let mut f = crate::ir::from_program(prog);
+    crate::ssa::build_ssa(&mut f);
+    let rolled = mode > 0 && pre_roll(&mut f, mc, ifc);
+    let mut g = START_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if g.len() < 12 && f.count_instrs() < 400_000 {
+        g.push((key, f.clone(), rolled));
+    }
+    (f, rolled)
+}
+
+pub fn start_func(prog: &Program, mc: &Machine, ifc: usize) -> crate::ir::Func {
+    start_func_ex(prog, mc, ifc).0
 }
