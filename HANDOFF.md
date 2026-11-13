@@ -22,8 +22,8 @@ total, so do them only if there is time before the deadline:
 | 5 | Divisibility test `x % c == 0` with a low multiply (§4.4) | constant-divisor tests in hidden programs | 0 on the bench (its divisors are variables) | low |
 | 6 | Latch duplication with rotated placement (§4.8) | `spill_storm` | ~4 % of that one program | medium |
 
-Organiser-gated: GF(2) CRC tables and idiom recognition exist but are off by default. Turn them on only if the organisers confirm
-they are allowed (`crc_bitwise` is 1,607 cycles). Before every push, run the checks in section 3; for the final commit, check again
+Organiser-gated: GF(2) CRC tables and idiom recognition are NOT BUILT (no code in `src/`; DESIGN.md lists them under "Not done"). Build them only if the organisers confirm
+they are allowed (`crc_bitwise` is 1,607 cycles; estimated gain 0.5-0.9 % of the bench total, most of a day of work). Before every push, run the checks in section 3; for the final commit, check again
 that `kit/` is not tracked.
 
 ## 1. Where the work is
@@ -216,7 +216,7 @@ constants, nothing reducible) is unchanged and probably at its floor. Still unte
 ### 5.4 From the original plan (`FINAL_FINAL.md` section 4 and 7), not yet built
 Magic division with peeling, divisibility test, signed division by constants (`src/algebra.rs`); latch duplication
 and cost-based if-conversion; multiversioning on trip count; wrapped intervals and relational facts in the range
-analysis; GVN-PRE. GF(2) CRC tables and idiom recognition exist but are **off by default** (the organisers have not
+analysis; GVN-PRE. GF(2) CRC tables and idiom recognition are **not built** (the organisers have not
 confirmed they are allowed).
 
 ## 6. Branches and housekeeping
