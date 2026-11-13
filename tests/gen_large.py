@@ -4,7 +4,7 @@ kit's `large` kind (fresh register names everywhere, const + op + mov chains), t
 time limit (30 s) and what it gains on such programs.
 
 Usage: python tests/gen_large.py OUTDIR [--size N] [--seed S]
-Writes OUTDIR/large_{poly,crc,mix,loops,affine,crcstep,chain,ladder,nest,cold}.kir with a matching .in file each.
+Writes OUTDIR/large_{poly,crc,mix,loops,affine,crcstep,chain,ladder,nest,cold,diamonds,irreducible,pressure,smallloops,deepnest,nestloops,stld}.kir with a matching .in file each.
 """
 import argparse
 import os
@@ -357,6 +357,236 @@ def gen_cold(size, rnd):
     return wrap('cold', 'v0', g), 'args 7\nmem 0 1 2 3\n'
 
 
+def gen_diamonds(size, rnd):
+    """Nested if/else: each unit is a diamond whose arms contain a second diamond (depth 3), all
+    updating an accumulator; units chained one after another."""
+    g = Gen(2)
+    acc = g.v()
+    g.emit('const %s, 0' % acc)
+    k = [0]
+
+    def diamond(depth):
+        k[0] += 1
+        t, c = g.v(), g.v()
+        th, el, en = g.lab('dt'), g.lab('de'), g.lab('dj')
+        g.emit('and %s, v0, %d' % (t, 1 << (k[0] % 24)))
+        g.emit('lt %s, 0, %s' % (c, t))
+        g.emit('br %s, %s, %s' % (c, th, el))
+        for lbl, op in ((th, 'add'), (el, 'xor')):
+            g.label(lbl)
+            n = g.v()
+            g.emit('%s %s, %s, %d' % (op, n, acc, rnd.randrange(1, 1000)))
+            g.emit('mov %s, %s' % (acc, n))
+            if depth > 0:
+                diamond(depth - 1)
+            m = g.v()
+            g.emit('add %s, %s, v1' % (m, acc))
+            g.emit('mov %s, %s' % (acc, m))
+            g.emit('jmp %s' % en)
+        g.label(en)
+
+    while g.count() < size:
+        diamond(3)
+    g.emit('ret %s' % acc)
+    return wrap('diamonds', 'v0, v1', g), 'args 123457 9\nmem 0 1 2 3\n'
+
+
+def gen_irreducible(size, rnd):
+    """Chained irreducible regions: entry branches into either of two blocks A and B that jump to
+    each other (a cycle with two entries); a counter bounds the trips."""
+    g = Gen(2)
+    acc = g.v()
+    g.emit('const %s, 0' % acc)
+    k = 0
+    while g.count() < size:
+        n, c, t = g.v(), g.v(), g.v()
+        A, B, out = g.lab('irA'), g.lab('irB'), g.lab('irX')
+        g.emit('const %s, 0' % n)
+        g.emit('and %s, v0, %d' % (t, 1 << (k % 20)))
+        g.emit('lt %s, 0, %s' % (c, t))
+        g.emit('br %s, %s, %s' % (c, A, B))
+        for me, other in ((A, B), (B, A)):
+            g.label(me)
+            x, n2, y, cc = g.v(), g.v(), g.v(), g.v()
+            g.emit('add %s, %s, %d' % (x, acc, rnd.randrange(1, 99)))
+            g.emit('xor %s, %s, v1' % (y, x))
+            g.emit('mov %s, %s' % (acc, y))
+            g.emit('add %s, %s, 1' % (n2, n))
+            g.emit('mov %s, %s' % (n, n2))
+            g.emit('lt %s, %s, 3' % (cc, n))
+            g.emit('br %s, %s, %s' % (cc, other, out))
+        g.label(out)
+        k += 1
+    g.emit('ret %s' % acc)
+    return wrap('irreducible', 'v0, v1', g), 'args 123457 9\nmem 0 1 2 3\n'
+
+
+def gen_pressure(size, rnd):
+    """Groups of 48 values loaded and kept alive together, then combined in a scrambled order
+    (far more live values than any machine has registers)."""
+    g = Gen(2)
+    ck = g.v()
+    g.emit('const %s, 0' % ck)
+    k = 0
+    while g.count() < size:
+        vals = []
+        for j in range(48):
+            c, l = g.v(), g.v()
+            g.emit('const %s, %d' % (c, (k * 7 + j) % 64))
+            g.emit('load %s, %s' % (l, c))
+            vals.append(l)
+        order = list(range(48))
+        rnd.shuffle(order)
+        acc = ck
+        for j in order:
+            n = g.v()
+            g.emit('%s %s, %s, %s' % (rnd.choice(['add', 'xor', 'mul']), n, acc, vals[j]))
+            acc = n
+        for j in range(0, 48, 3):  # second use of everything, after the first sweep
+            n = g.v()
+            g.emit('add %s, %s, %s' % (n, acc, vals[j]))
+            acc = n
+        g.emit('mov %s, %s' % (ck, acc))
+        k += 1
+    g.emit('ret %s' % ck)
+    return wrap('pressure', 'v0, v1', g), 'args 5 9\nmem 0 ' + ' '.join(
+        str(rnd.randrange(100)) for _ in range(64)) + '\n'
+
+
+def gen_smallloops(size, rnd):
+    """Thousands of tiny loops (trip count 1..3) that load, store and update an accumulator;
+    every loop writes a different scratch word."""
+    g = Gen(2)
+    ck = g.v()
+    g.emit('const %s, 0' % ck)
+    k = 0
+    while g.count() < size:
+        i, s, lim = g.v(), g.v(), g.v()
+        head, body, out = g.lab('sh'), g.lab('sb'), g.lab('sx')
+        g.emit('const %s, 0' % i)
+        g.emit('const %s, %d' % (s, rnd.randrange(9)))
+        g.emit('const %s, %d' % (lim, rnd.randrange(1, 4)))
+        g.emit('jmp %s' % head)
+        g.label(head)
+        c = g.v()
+        g.emit('lt %s, %s, %s' % (c, i, lim))
+        g.emit('br %s, %s, %s' % (c, body, out))
+        g.label(body)
+        a, l, m, u, n, o = [g.v() for _ in range(6)]
+        g.emit('add %s, %s, %d' % (a, i, k % 60))
+        g.emit('load %s, %s' % (l, a))
+        g.emit('mul %s, %s, v1' % (m, l))
+        g.emit('add %s, %s, %s' % (u, s, m))
+        g.emit('mov %s, %s' % (s, u))
+        g.emit('const %s, %d' % (o, 1024 + k % 2048))
+        g.emit('store %s, %s' % (o, s))
+        g.emit('add %s, %s, 1' % (n, i))
+        g.emit('mov %s, %s' % (i, n))
+        g.emit('jmp %s' % head)
+        g.label(out)
+        x = g.v()
+        g.emit('add %s, %s, %s' % (x, ck, s))
+        g.emit('mov %s, %s' % (ck, x))
+        k += 1
+    g.emit('ret %s' % ck)
+    return wrap('smallloops', 'v0, v1', g), 'args 5 9\nmem 0 ' + ' '.join(
+        str(rnd.randrange(100)) for _ in range(64)) + '\n'
+
+
+def gen_deepnest(size, rnd):
+    """One loop nest as deep as the size allows (about size/10 levels), every loop running once;
+    the body is in the innermost loop. Stresses recursion depth in loop analysis."""
+    g = Gen(1)
+    s = g.v()
+    g.emit('const %s, 0' % s)
+    depth = max(1, size // 10)
+    ivs = []
+    for d in range(depth):
+        i = g.v()
+        ivs.append(i)
+        g.emit('const %s, 0' % i)
+        g.emit('jmp dh%d' % d)
+        g.label('dh%d' % d)
+        c = g.v()
+        g.emit('lt %s, %s, 1' % (c, i))
+        g.emit('br %s, db%d, dx%d' % (c, d, d))
+        g.label('db%d' % d)
+    t = g.v()
+    g.emit('add %s, %s, v0' % (t, s))
+    g.emit('mov %s, %s' % (s, t))
+    for d in reversed(range(depth)):
+        n = g.v()
+        g.emit('add %s, %s, 1' % (n, ivs[d]))
+        g.emit('mov %s, %s' % (ivs[d], n))
+        g.emit('jmp dh%d' % d)
+        g.label('dx%d' % d)
+    g.emit('ret %s' % s)
+    return wrap('deepnest', 'v0', g), 'args 7\nmem 0 1 2 3\n'
+
+
+def gen_nestloops(size, rnd):
+    """Many separate 6-deep loop nests; trips are 2 only at one random level (product 2) so the
+    dynamic length stays small."""
+    g = Gen(1)
+    ck = g.v()
+    g.emit('const %s, 0' % ck)
+    k = 0
+    while g.count() < size:
+        two = rnd.randrange(6)
+        ivs = []
+        for d in range(6):
+            i = g.v()
+            ivs.append(i)
+            g.emit('const %s, 0' % i)
+            g.emit('jmp nh%d_%d' % (k, d))
+            g.label('nh%d_%d' % (k, d))
+            c = g.v()
+            g.emit('lt %s, %s, %d' % (c, i, 2 if d == two else 1))
+            g.emit('br %s, nb%d_%d, nx%d_%d' % (c, k, d, k, d))
+            g.label('nb%d_%d' % (k, d))
+        t, u = g.v(), g.v()
+        g.emit('mul %s, %s, %d' % (t, ivs[-1], rnd.randrange(2, 9)))
+        g.emit('add %s, %s, v0' % (u, t))
+        g.emit('add %s, %s, %s' % (ck, ck, u))
+        for d in reversed(range(6)):
+            n = g.v()
+            g.emit('add %s, %s, 1' % (n, ivs[d]))
+            g.emit('mov %s, %s' % (ivs[d], n))
+            g.emit('jmp nh%d_%d' % (k, d))
+            g.label('nx%d_%d' % (k, d))
+        k += 1
+    g.emit('ret %s' % ck)
+    return wrap('nestloops', 'v0', g), 'args 7\nmem 0 1 2 3\n'
+
+
+def gen_stld(size, rnd):
+    """Long straight line of stores and loads to a small set of scratch addresses (heavy aliasing:
+    store-to-load forwarding, redundant loads, dead stores)."""
+    g = Gen(2)
+    ck = g.v()
+    g.emit('const %s, 0' % ck)
+    while g.count() < size:
+        a, b = g.v(), g.v()
+        ad, bd = rnd.randrange(1024, 1040), rnd.randrange(1024, 1040)
+        g.emit('const %s, %d' % (a, ad))
+        g.emit('const %s, %d' % (b, bd))
+        l = g.v()
+        g.emit('load %s, %s' % (l, a))
+        x = g.v()
+        g.emit('add %s, %s, %d' % (x, l, rnd.randrange(1, 50)))
+        g.emit('store %s, %s' % (b, x))
+        l2 = g.v()
+        g.emit('load %s, %s' % (l2, b))
+        y = g.v()
+        g.emit('xor %s, %s, v1' % (y, l2))
+        g.emit('store %s, %s' % (a, y))
+        n = g.v()
+        g.emit('add %s, %s, %s' % (n, ck, y))
+        g.emit('mov %s, %s' % (ck, n))
+    g.emit('ret %s' % ck)
+    return wrap('stld', 'v0, v1', g), 'args 5 9\nmem 1024 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16\n'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('outdir')
@@ -367,7 +597,10 @@ def main():
     os.makedirs(o.outdir, exist_ok=True)
     shapes = (('poly', gen_poly), ('crc', gen_crc), ('mix', gen_mix), ('loops', gen_loops),
               ('affine', gen_affine), ('crcstep', gen_crcstep), ('chain', gen_chain),
-              ('ladder', gen_ladder), ('nest', gen_nest), ('cold', gen_cold))
+              ('ladder', gen_ladder), ('nest', gen_nest), ('cold', gen_cold),
+              ('diamonds', gen_diamonds), ('irreducible', gen_irreducible), ('pressure', gen_pressure),
+              ('smallloops', gen_smallloops), ('deepnest', gen_deepnest), ('nestloops', gen_nestloops),
+              ('stld', gen_stld))
     for name, fn in shapes:
         if o.only and o.only != name:
             continue
