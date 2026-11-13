@@ -1267,7 +1267,7 @@ fn try_split_checks(f: &mut Func, sh: &Shape, rng: &Ranges) -> bool {
     if d1.abs() > 1 << 20 || d2.abs() > 1 << 20 || kk.abs() > 1 << 29 || kp.abs() > 1 << 29 {
         return rej(line!());
     }
-    if delta < 0 && rng.get(p1, h).1 > 0x7fff_ffff {
+    if delta < 0 && rng.get(p1, h).1 + d1.max(d2).max(0) > 0x7fff_ffff {
         return rej(line!());
     }
     // ---- build ----
@@ -1576,17 +1576,15 @@ for_exit3:
 
     /// Wrap-around probe for delta < 0: counter p starts anywhere in [0, 2^31), a1 = p + 100 wraps
     /// negative for p >= 2^31 - 100 while a2 = p does not. Asserts the split keeps behaviour;
-    /// it currently FAILS (original traps, split program does not), hence #[ignore]. See DESIGN.md.
+    /// it failed before the guard in split_checks covered the wrap (see DESIGN.md).
     #[test]
-    #[ignore = "known unsound: delta < 0 with a wrapping a1, see DESIGN.md"]
     fn split_checks_wrap_probe() {
         let src = "func f(v0)\nentry:\n  and v3, v0, 2147483647\n  const v5, 0\n  jmp h\nh:\n  add v6, v3, 100\n  lt v4, v6, 5\n  br v4, b, x\nb:\n  lt v7, v3, 64\n  br v7, c, t\nc:\n  add v5, v5, 1\n  add v3, v3, 1\n  jmp h\nx:\n  ret v5\nt:\n  trap 3\n";
         let orig = parse_program(src).unwrap();
         let co = compile_program(&orig);
         let mut f = from_program(&orig);
         ssa::build_ssa(&mut f);
-        let split = split_checks(&mut f);
-        assert!(split);
+        let _split = split_checks(&mut f); // now rejected (the guard covers the wrap); either way behaviour must be kept
         ssa::destruct_ssa(&mut f);
         ssa::allocate(&mut f, None, false, false, 0, 0, 0).unwrap();
         let cn = compile_program(&parse_program(&to_text(&f)).unwrap());

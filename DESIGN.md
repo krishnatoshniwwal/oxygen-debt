@@ -729,7 +729,7 @@ The argument has four parts.
      original traps, the transformed program does not. It needs the counter to enter the loop within `d1` of 2^31, which
      value ranges accept (range `[0, 0x7fffffff]`) but no benchmark does. A sound fix: for `delta < 0` also require
      `rng.get(i).1 + max(d1, d2, 0) <= 0x7fffffff`, so that neither `a1` nor `a2` can wrap upward (then `a1 >= -2^20` as
-     well, and `a1 + delta >= -2^21` cannot underflow). Not applied here (only DESIGN.md and tests were in scope).
+     well, and `a1 + delta >= -2^21` cannot underflow). Applied in `split_checks`; `split_checks_wrap_probe` now passes.
    - The other constants: `|d1|, |d2| <= 2^20`, `|K|, |kp| <= 2^29` keep `kp` and the sums in range, so `min(b, kp)` and
      the comparisons are computed without wrap; a literal `b` is folded with `kp` at compile time.
 Test: `split_checks_bounds_trap_exhaustive` runs `bounds_trap` for every n in 0..=300 (the program masks n with 255,
