@@ -97,9 +97,10 @@ cache `Variant.reuse`, and `peel = 3` (see DESIGN.md). Sample cycles on the benc
 Still unmerged: `claude/midend-8682d5` (sinking, ~no gain), `claude/large-progs-2-4b8b5d` (nothing).
 
 Open items:
-- Latent miscompile, **caught by the self-check** (so never written out): fuzz case `g63000338` (kfuzz gen
-  seed 63) - a program that reads registers before writing them; candidates with `spill: true` loop
-  forever (tested back to commit 56e0724). Worth a fix; `out/kfuzz/fail/gen/g63000338.min.kir`.
+- kfuzz `caught-timing` (e.g. `g63000338`, gen seed 63) is **not a miscompile**: a spill-heavy candidate
+  (`spill: true`) returns the right result but runs ~4.1x the original's instructions, so it hits the
+  driver's step cap (4x + 1000, `Reference::score`) and is rejected as "behaves differently on a timing
+  input". The candidate is only slow; nothing wrong is written. (Checked on 540 inputs.)
 - `large_chain` (100k dependent straight-line ops) is unchanged by kopt.
 - `spill_storm|few_registers` still does ~21 loads per iteration where a rolling-window order needs ~12.
 - Search order matters: the walk in `driver.rs` is greedy, so new settings that need other settings to pay
