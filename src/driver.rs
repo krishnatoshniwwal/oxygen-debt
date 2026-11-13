@@ -512,9 +512,13 @@ impl<'a> Search<'a> {
     fn try_tsp(&mut self, f: &Func, cp: &Compiled, v: &Variant, be: Backend) -> Option<f64> {
         let (prog, mc, profile, rf) = (self.prog, self.mc, self.profile, self.rf);
         let r = catch_unwind(AssertUnwindSafe(|| -> Option<(String, Compiled, usize, f64)> {
+            let mut t = prof_start();
             let traces = rf.traces(cp);
+            prof("tsp traces", &mut t);
             let counts = layout::dyn_counts(f, cp, &traces);
+            prof("tsp dyn_counts", &mut t);
             let ord = layout::improve(f, mc, &counts, profile)?;
+            prof("tsp improve", &mut t);
             let mut g = f.clone();
             g.blocks = ord;
             let out = ir::to_text(&g);
