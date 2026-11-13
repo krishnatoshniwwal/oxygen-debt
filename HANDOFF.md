@@ -250,3 +250,8 @@ Everything below was run on the final code (WSL on the Windows laptop, binary bu
 * **Wrong profiles:** 7 programs x 2 foreign `.prof` files x 2 machines = 28 runs: 0 failures.
 * **Rules hygiene:** no bench program names or hashes in `src/` (the only name matches are an integer `gcd` helper and a comment about popcount); no external crates; `kopt`/`build.sh` mode 100755; `.gitattributes` forces LF; `kit/` not tracked; fresh clone builds in ~5 s and runs from any folder.
 * **Not verified:** the judges' machine speed (single core, Ubuntu 22.04). Slowest bench program ~0.5 s, large programs <= 6.3 s here (limits 5 s / 30 s).
+
+### 5.1h Latch duplication as a post-sched2 candidate (task-latch)
+`driver.rs::post_latch` (after `post_sched2`, never a walk neighbour): for the 3 best sched2 results, `latch_dup_text` replaces `jmp H` by a copy of H when H (<= 6 instrs) ends in `br c, <this block>, X`;
+the copy and its sched2 re-run are scored exactly and added as candidates. Sample total 69,002 -> 68,788 (-0.31 %): spill_storm few_registers 3,904 -> 3,592, slow_memory 5,588 -> 5,356, count_divisors -97, matmul4/row_sums/matvec8 no_fused -64/-36/-34.
+Two small losses (selection is by sample score): fletcher16|no_fused 427 -> 446, spill_storm|default 3,784 -> 3,792. fails=0, nothing slower than original, 34 tests, kfuzz gen/mutate/machines 300 seed 9: same findings as the baseline binary (gen caught-timing g9000161 + 1 regress, mutate 1 regress), machines clean.

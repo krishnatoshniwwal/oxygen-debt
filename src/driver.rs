@@ -1051,7 +1051,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
     }
     let t_ps2 = prof_start();
+    let n_before_s2 = s.results.len();
     post_sched2(&mut s);
+    post_latch(&mut s, n_before_s2);
     { let mut t = t_ps2; prof("post_sched2", &mut t); }
     if size <= MID {
         large_extras(&mut s, state.0, b0, mc, size);
@@ -1214,6 +1216,111 @@ fn post_sched2(s: &mut Search) {
             s.seen.insert(t2.clone(), sc);
             let desc = format!("sched2 of {}", s.results[i].desc);
             s.results.push(Cand { score: sc, size, order: s.n, text: t2, cp, desc });
+        }
+    }
+}
+
+/// Latch duplication on program text: a block ending in `jmp H` where H is a small block ending in
+/// `br c, <this block>, X` (a two-block loop) gets a copy of H's instructions instead of the jump.
+/// Pure code copying (the copy has the same labels as H's terminator), so always legal; the caller
+/// scores the result exactly.
+fn latch_dup_text(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    // blocks: label line index -> (label, instruction lines)
+    let mut blocks: Vec<(usize, String, Vec<usize>)> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim();
+        if !l.starts_with(' ') && t.ends_with(':') {
+            blocks.push((i, t.trim_end_matches(':').to_string(), Vec::new()));
+        } else if l.starts_with("  ") && !t.is_empty() {
+            if let Some(b) = blocks.last_mut() {
+                b.2.push(i);
+            }
+        }
+    }
+    let mut repl: HashMap<usize, Vec<String>> = HashMap::new();
+    for (_, lab, ins) in blocks.iter() {
+        let last = match ins.last() { Some(&i) => lines[i].trim(), None => continue };
+        let tgt = match last.strip_prefix("jmp ") { Some(t) => t.trim(), None => continue };
+        let h = match blocks.iter().find(|b| b.1 == tgt) { Some(h) => h, None => continue };
+        if h.1 == *lab || h.2.len() > 6 || h.2.len() < 2 {
+            continue;
+        }
+        let hl = lines[*h.2.last().unwrap()].trim();
+        let hits = hl.starts_with("br ") && hl.split(',').skip(1).any(|p| p.trim() == lab.as_str());
+        if !hits {
+            continue;
+        }
+        let mut v: Vec<String> = Vec::new();
+        for &i in h.2.iter() {
+            v.push(lines[i].to_string());
+        }
+        repl.insert(*ins.last().unwrap(), v);
+    }
+    if repl.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        if let Some(v) = repl.get(&i) {
+            for x in v {
+                out.push_str(x);
+                out.push('\n');
+            }
+        } else {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    Some(out)
+}
+
+/// Extra candidates after the walk: latch duplication on the best few sched2 results, re-scheduled.
+fn post_latch(s: &mut Search, first: usize) {
+    if s.size > MID || s.results.len() <= first {
+        return;
+    }
+    let inputs = s.rf.timing_inputs();
+    if inputs.is_empty() {
+        return;
+    }
+    let mut idx: Vec<usize> = (first..s.results.len()).collect();
+    idx.sort_by(|&a, &b| {
+        let (x, y) = (&s.results[a], &s.results[b]);
+        x.score.partial_cmp(&y.score).unwrap().then(x.size.cmp(&y.size)).then(x.order.cmp(&y.order))
+    });
+    let mc = s.mc;
+    let nparams = s.prog.params.len();
+    for &i in idx.iter().take(3) {
+        let base = match latch_dup_text(&s.results[i].text) { Some(t) => t, None => continue };
+        let mut texts = vec![base.clone()];
+        if let Ok(Some(t)) = catch_unwind(AssertUnwindSafe(|| sched2::optimize(&base, mc, &inputs, 4_000_000))) {
+            texts.push(t);
+        }
+        for t in texts {
+            if s.seen.contains_key(&t) {
+                continue;
+            }
+            let rf = s.rf;
+            let ok = catch_unwind(AssertUnwindSafe(|| -> Option<(Compiled, usize, f64)> {
+                let np = parse_program(&t).ok()?;
+                check_machine_features(&np, mc).ok()?;
+                if np.params.len() != nparams {
+                    return None;
+                }
+                let cp = compile_program(&np);
+                let sc = rf.score(&cp)?;
+                Some((cp, np.instrs.len(), sc))
+            }));
+            if std::env::var_os("KOPT_PROF").is_some() {
+                eprintln!("kopt-latch from #{} score {:.0} -> {:?}", i, s.results[i].score, ok.as_ref().ok().and_then(|o| o.as_ref().map(|x| x.2)));
+            }
+            if let Ok(Some((cp, size, sc))) = ok {
+                s.n += 1;
+                s.seen.insert(t.clone(), sc);
+                let desc = format!("latch dup of {}", s.results[i].desc);
+                s.results.push(Cand { score: sc, size, order: s.n, text: t, cp, desc });
+            }
         }
     }
 }
