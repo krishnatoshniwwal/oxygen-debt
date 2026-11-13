@@ -15,6 +15,7 @@ class Gen:
     def __init__(self, nparams):
         self.n = nparams
         self.lines = []
+        self.ni = 0
         self.blk = 0
 
     def v(self):
@@ -22,6 +23,7 @@ class Gen:
         return 'v%d' % (self.n - 1)
 
     def emit(self, s):
+        self.ni += 1
         self.lines.append('  ' + s)
 
     def label(self, name):
@@ -32,7 +34,7 @@ class Gen:
         return '%s%d' % (base, self.blk)
 
     def count(self):
-        return sum(1 for l in self.lines if l.startswith('  '))
+        return self.ni
 
 
 def gen_poly(size, rnd):
