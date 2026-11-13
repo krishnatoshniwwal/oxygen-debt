@@ -17,6 +17,7 @@ use crate::ranges::Ranges;
 use crate::sched2;
 use crate::domain;
 use crate::reassoc;
+use crate::idiom;
 use crate::sccp;
 use crate::sink;
 use crate::ssa;
@@ -51,12 +52,13 @@ pub struct Variant {
     pub reuse: u8,   // spill code: keep the last n loaded/stored scratch words available for later uses (0 = reload at every use)
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
     pub split: bool, // index-set splitting of a bounds check: a check-free front loop (loopopt::split_checks)
+    pub idiom: u8,   // bit idioms (idiom.rs): 0 = off, 1 / 2 = popcount bytes summed by multiply / by shifts
     pub crc: bool,   // start from the program with GF(2) nibble-table CRC steps (crc.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0, split: false, crc: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0, split: false, idiom: 0, crc: false }
     }
 }
 
@@ -253,6 +255,12 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool, pa: &mut HashM
         }
     }
     prof("phase_a total", &mut t);
+    if v.idiom != 0 && !light {
+        if idiom::run(&mut f, v.idiom) {
+            chk(&mut f, "idiom");
+            phase_a(&mut f, v, false);
+        }
+    }
     if v.peel != 0 {
         let budget = match v.peel { 1 => ic, 3 => 2 * ic, 4 => 3 * ic, 5 => 4 * ic, 6 => 6 * ic, _ => (4 * ic).max(256) } as usize; // peel 3-5: the enclosing loop nest (sizes counted before clean-up, which roughly halves them) may be 2x, 3x, 4x the icache
         for _ in 0..4 {
@@ -911,6 +919,13 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             if state.1.map_or(true, |b| sc < b - 1e-9) {
                 *state = (v, Some(sc));
             }
+        }
+    }
+    if size <= MID && std::env::var_os("KOPT_NOIDIOM").is_none() {
+        // Bit idioms (idiom.rs): extra candidates on the walk's final setting; exact scoring decides.
+        let b = state.0;
+        for m in [1u8, 2] {
+            consider2(&mut s, &mut state, Variant { idiom: m, ..b });
         }
     }
     if size <= MID && std::env::var_os("KOPT_NOPEEL3").is_none() {

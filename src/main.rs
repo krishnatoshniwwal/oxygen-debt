@@ -4,6 +4,7 @@ mod backend;
 mod domain;
 mod control;
 mod crc;
+mod idiom;
 mod driver;
 mod evalsim;
 mod ir;
