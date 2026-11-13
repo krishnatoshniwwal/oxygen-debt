@@ -1021,6 +1021,27 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             }
         }
     }
+    if size <= MID && s.results.iter().any(|c| c.desc.contains("split: true")) {
+        // split_checks together with the pressure settings (extra candidates after the walk): on a
+        // machine with few registers the split program needs hot/spill/sched settings of its own,
+        // which the walk's final setting (chosen without the split) does not have.
+        let b = state.0;
+        for hot in [true, false] {
+            for sp in [false, true] {
+                for sch in [b.sched, !b.sched] {
+                    let v = Variant { split: true, gu: 0, unroll: 1, hot, spill: sp, sched: sch, ..b };
+                    if s.can_start() {
+                        consider2(&mut s, &mut state, v);
+                        for be in BACKENDS[1..].iter() {
+                            if s.spent <= WORK_BUDGET * 2 && s.can_start() {
+                                s.run(&v, *be);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if s.prog_crc.is_some() {
         // GF(2) nibble tables for bitwise CRC steps (crc.rs): extra candidates after the walk
         for v in [Variant { crc: true, ..state.0 }, Variant { crc: true, ..Variant::default() }] {
