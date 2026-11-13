@@ -1144,6 +1144,216 @@ fn try_unroll_guarded(f: &mut Func, sh: &Shape, rng: &Ranges, u: usize) -> bool 
     true
 }
 
+/// Index-set splitting of a bounds check. For a loop `while (a1 < b) { ...; if !(a2 < K) trap;
+/// ... }` (a1 = i + d1, a2 = i + d2, i a counter with a positive constant step, K a literal) a
+/// front loop without the check runs while `a1 < min(b, K - (d2 - d1))`, then falls into the
+/// original loop, which re-evaluates its own test and check from the current state. The front
+/// loop only runs iterations in which both tests hold, so the behaviour is exactly the same.
+pub fn split_checks(f: &mut Func) -> bool {
+    analyze(f);
+    let rng = Ranges::new(f, 14);
+    if !rng.ok {
+        return false;
+    }
+    let nb0 = f.arena.len();
+    let mut changed = false;
+    let mut tried: HashSet<String> = HashSet::new();
+    for _ in 0..4 {
+        analyze(f);
+        let mut target = None;
+        for li in 0..f.loops.len() {
+            if f.loops.iter().any(|o| o.parent == Some(li)) {
+                continue;
+            }
+            let name = f.arena[f.loops[li].header].name.clone();
+            if tried.insert(name) {
+                target = Some(li);
+                break;
+            }
+        }
+        let li = match target {
+            Some(l) => l,
+            None => break,
+        };
+        if f.loops[li].blocks.iter().any(|&b| b >= nb0) {
+            continue;
+        }
+        let sh = match chain_shape(f, li) {
+            Some(s) if s.chain.len() >= 3 => s,
+            _ => continue,
+        };
+        if try_split_checks(f, &sh, &rng) {
+            changed = true;
+        }
+    }
+    if changed {
+        analyze(f);
+    }
+    changed
+}
+
+fn try_split_checks(f: &mut Func, sh: &Shape, rng: &Ranges) -> bool {
+    let h = sh.chain[0];
+    let last = sh.chain.len() - 1;
+    let ht = f.arena[h].term().clone();
+    if ht.op != Op::Br || ht.t.len() != 2 || ht.t[0] != sh.chain[1] || sh.chain.contains(&ht.t[1]) {
+        return rej(line!());
+    }
+    let hl = f.arena[h].ins.len();
+    for ins in &f.arena[h].ins[..hl - 1] {
+        if matches!(ins.op, Op::Store | Op::Vload | Op::Vstore | Op::Trap) {
+            return rej(line!());
+        }
+    }
+    let c = ht.a[0];
+    if c < 0 {
+        return rej(line!());
+    }
+    let lt1 = match f.arena[h].ins.iter().find(|i| i.has_d() && i.d == c) {
+        Some(i) if i.op == Op::Lt => i.clone(),
+        _ => return rej(line!()),
+    };
+    let (a1, b) = (lt1.a[0], lt1.a[1]);
+    let defined_in_loop = |v: i64| -> bool {
+        v >= 0 && (f.arena[h].phis.iter().any(|p| p.d == v) || sh.chain.iter().any(|&bb| f.arena[bb].ins.iter().any(|i| i.has_d() && i.d == v)))
+    };
+    if defined_in_loop(b) || a1 < 0 {
+        return rej(line!());
+    }
+    // the check block: `br (lt a2, K), next, <block that only traps>`; every other block jumps on
+    let mut ci = None;
+    for j in 1..=last {
+        let t = f.arena[sh.chain[j]].term().clone();
+        match t.op {
+            Op::Jmp => {}
+            Op::Br if j < last && t.t.len() == 2 && t.t[0] == sh.chain[j + 1] && !sh.chain.contains(&t.t[1]) => {
+                let tb = &f.arena[t.t[1]];
+                if ci.is_some() || tb.ins.len() != 1 || tb.ins[0].op != Op::Trap || !tb.phis.is_empty() {
+                    return rej(line!());
+                }
+                ci = Some(j);
+            }
+            _ => return rej(line!()),
+        }
+    }
+    let ci = match ci {
+        Some(j) => j,
+        None => return rej(line!()),
+    };
+    let c2 = f.arena[sh.chain[ci]].term().a[0];
+    if c2 < 0 || passes::use_counts(f)[c2 as usize] != 1 {
+        return rej(line!());
+    }
+    let lt2 = match f.arena[sh.chain[ci]].ins.iter().find(|i| i.has_d() && i.d == c2) {
+        Some(i) if i.op == Op::Lt && i.a[0] >= 0 && i.a[1] < 0 => i.clone(),
+        _ => return rej(line!()),
+    };
+    let kk = lit_signed(lt2.a[1]);
+    let (p1, d1) = match affine(f, h, &sh.chain, a1, 0) {
+        Some(t) => t,
+        None => return rej(line!()),
+    };
+    let (p2, d2) = match affine(f, h, &sh.chain, lt2.a[0], 0) {
+        Some(t) => t,
+        None => return rej(line!()),
+    };
+    if p1 != p2 {
+        return rej(line!());
+    }
+    // `a1 < min(b, kp)` must imply `a2 < kk` in wrapped 32-bit arithmetic. a1 < kp <= 2^29 rules out
+    // overflow of a1 + delta; an underflow is only possible for delta < 0 and a negative counter.
+    let delta = d2 - d1;
+    let kp = kk - delta;
+    if d1.abs() > 1 << 20 || d2.abs() > 1 << 20 || kk.abs() > 1 << 29 || kp.abs() > 1 << 29 {
+        return rej(line!());
+    }
+    if delta < 0 && rng.get(p1, h).1 > 0x7fff_ffff {
+        return rej(line!());
+    }
+    // ---- build ----
+    let phis: Vec<Instr> = f.arena[h].phis.clone();
+    let hins: Vec<Instr> = f.arena[h].ins[..hl - 1].to_vec();
+    let mut bins: Vec<Instr> = Vec::new();
+    for &bb in &sh.chain[1..] {
+        let l = f.arena[bb].ins.len();
+        bins.extend(f.arena[bb].ins[..l - 1].iter().cloned());
+    }
+    let h2 = f.new_block("sc_head");
+    let b2 = f.new_block("sc_body");
+    let p2v: Vec<i64> = phis.iter().map(|_| f.new_val()).collect();
+    let mut m: HashMap<i64, i64> = HashMap::new();
+    for (i, ph) in phis.iter().enumerate() {
+        m.insert(ph.d, p2v[i]);
+    }
+    fn emit(ins: &Instr, m: &mut HashMap<i64, i64>, out: &mut Vec<Instr>, f: &mut Func) {
+        let mut c = ins.clone();
+        for x in c.a.iter_mut() {
+            if *x >= 0 {
+                if let Some(&r) = m.get(x) {
+                    *x = r;
+                }
+            }
+        }
+        if c.has_d() {
+            let nv = f.new_val();
+            m.insert(c.d, nv);
+            c.d = nv;
+        }
+        out.push(c);
+    }
+    let mut h2_ins: Vec<Instr> = Vec::new();
+    let mut b2_ins: Vec<Instr> = Vec::new();
+    for ins in &hins {
+        emit(ins, &mut m, &mut h2_ins, f);
+    }
+    for ins in &bins {
+        emit(ins, &mut m, &mut b2_ins, f);
+    }
+    let a1m = m.get(&a1).copied().unwrap_or(a1);
+    // the combined limit min(b, kp), computed once in the preheader
+    let pre = sh.pre;
+    let limit: i64 = if b < 0 {
+        let bs = lit_signed(b);
+        lit(bs.min(kp))
+    } else {
+        let cmp = f.new_val();
+        let mv = f.new_val();
+        let term = f.arena[pre].ins.pop().unwrap();
+        f.arena[pre].ins.push(Instr::new(Op::Lt, cmp, vec![b, lit(kp)], vec![]));
+        f.arena[pre].ins.push(Instr::new(Op::Select, mv, vec![cmp, b, lit(kp)], vec![]));
+        f.arena[pre].ins.push(term);
+        mv
+    };
+    let t = f.new_val();
+    h2_ins.push(Instr::new(Op::Lt, t, vec![a1m, limit], vec![]));
+    h2_ins.push(Instr::no_d(Op::Br, vec![t], vec![b2, h]));
+    b2_ins.push(Instr::no_d(Op::Jmp, vec![], vec![h2]));
+    let mut h2_phis = Vec::new();
+    for (i, ph) in phis.iter().enumerate() {
+        let back = ph.a[sh.back_idx];
+        let bv = if back >= 0 { m.get(&back).copied().unwrap_or(back) } else { back };
+        h2_phis.push(Instr::new(Op::Phi, p2v[i], vec![ph.a[sh.pre_idx], bv], vec![]));
+    }
+    f.arena[h2].phis = h2_phis;
+    f.arena[h2].ins = h2_ins;
+    f.arena[h2].preds = vec![pre, b2];
+    f.arena[b2].ins = b2_ins;
+    f.arena[b2].preds = vec![h2];
+    for tt in f.arena[pre].ins.last_mut().unwrap().t.iter_mut() {
+        if *tt == h {
+            *tt = h2;
+        }
+    }
+    f.arena[h].preds[sh.pre_idx] = h2;
+    for (i, ph) in f.arena[h].phis.iter_mut().enumerate() {
+        ph.a[sh.pre_idx] = p2v[i];
+    }
+    let pos = f.blocks.iter().position(|&bb| bb == h).unwrap();
+    f.blocks.insert(pos, b2);
+    f.blocks.insert(pos, h2);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,6 +1432,41 @@ x:
                         continue;
                     }
                     assert!(!differs(&a, &b), "rot {} gu {} differs on {:?}\n{}", rot, gu, inp.args, text);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_checks_keeps_behaviour() {
+        let progs = [
+            "func f(v0)\nentry:\n  and v1, v0, 255\n  const v2, 0\n  const v3, 0\n  jmp h\nh:\n  lt v4, v3, v1\n  br v4, b, x\nb:\n  lt v6, v3, 64\n  br v6, c, t\nc:\n  add v7, 300, v3\n  store v7, v2\n  load v8, v3\n  add v2, v2, v8\n  add v3, v3, 1\n  jmp h\nx:\n  ret v2\nt:\n  trap 7\n",
+            "func f(v0, v1)\nentry:\n  and v2, v0, 255\n  and v9, v1, 15\n  const v3, 0\n  const v5, 0\n  jmp h\nh:\n  add v6, v3, 2\n  lt v4, v6, v2\n  br v4, b, x\nb:\n  add v8, v3, 5\n  lt v7, v8, 40\n  br v7, c, t\nc:\n  add v5, v5, v6\n  add v3, v3, 3\n  jmp h\nx:\n  ret v5\nt:\n  trap 9\n",
+            "func f(v0)\nentry:\n  const v3, 0\n  const v5, 0\n  jmp h\nh:\n  lt v4, v3, v0\n  br v4, b, x\nb:\n  lt v7, v3, 100\n  br v7, c, t\nc:\n  add v5, v5, v3\n  add v3, v3, 1\n  jmp h\nx:\n  ret v5\nt:\n  trap 3\n",
+        ];
+        for src in progs.iter() {
+            let orig = parse_program(src).unwrap();
+            let co = compile_program(&orig);
+            for gu in [0usize, 2, 4] {
+                let mut f = from_program(&orig);
+                ssa::build_ssa(&mut f);
+                assert!(split_checks(&mut f), "no split\n{}", src);
+                if gu > 1 {
+                    unroll_guarded(&mut f, gu);
+                }
+                ssa::check_ssa(&mut f).unwrap();
+                ssa::destruct_ssa(&mut f);
+                ssa::allocate(&mut f, None, false, false, 0, 0, 0).unwrap();
+                let text = to_text(&f);
+                assert!(text.contains("sc_body"), "{}", text);
+                let cn = compile_program(&parse_program(&text).unwrap());
+                for inp in generate_inputs(2, 120, 7) {
+                    let a = execute(&co, &inp, 200000, false);
+                    let b = execute(&cn, &inp, 2000000, false);
+                    if a.outcome == Outcome::Timeout {
+                        continue;
+                    }
+                    assert!(!differs(&a, &b), "gu {} differs on {:?}\n{}", gu, inp.args, text);
                 }
             }
         }

@@ -49,11 +49,12 @@ pub struct Variant {
     pub spillk: u8,  // spill code: put the k least-touched loop-carried values in scratch at once (frees names for loads that run ahead)
     pub reuse: u8,   // spill code: keep the last n loaded/stored scratch words available for later uses (0 = reload at every use)
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
+    pub split: bool, // index-set splitting of a bounds check: a check-free front loop (loopopt::split_checks)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0 }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0, split: false }
     }
 }
 
@@ -271,6 +272,12 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool, pa: &mut HashM
         }
         ssa::build_ssa(&mut f);
         phase_a(&mut f, v, false);
+    }
+    if (v.split || std::env::var_os("KOPT_FORCE_SPLIT").is_some()) && !light {
+        if loopopt::split_checks(&mut f) {
+            chk(&mut f, "split_checks");
+            phase_a(&mut f, v, false);
+        }
     }
     let guv = std::env::var("KOPT_FORCE_GU").ok().and_then(|s| s.parse::<u8>().ok()).unwrap_or(v.gu);
     if guv > 1 && !light {
@@ -934,6 +941,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         for g in [2u8, 4, 8] {
             tries.push(Variant { gu: g, ..b });
             tries.push(Variant { gu: g, unroll: 1, ..b });
+        }
+        for g in [0u8, 2, 4, 8] {
+            tries.push(Variant { split: true, gu: g, unroll: 1, ..b });
         }
         for r in [1u8, 2] {
             tries.push(Variant { rot: r, ..b });
