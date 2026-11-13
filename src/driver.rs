@@ -1025,6 +1025,36 @@ fn max_reg_used(text: &str) -> usize {
     m
 }
 
+/// Highest register number used in the largest block of a program text (the loop body in the
+/// programs this is meant for), or 0 for no registers. The exit and entry blocks often mention
+/// more registers (spilled ones) than the loop does, so the whole-program maximum would hide
+/// that a name is free in the loop.
+fn max_reg_in_big_block(text: &str) -> usize {
+    let mut best: (usize, usize) = (0, 0); // (instructions, max register) of the largest block
+    let mut cur: (usize, usize) = (0, 0);
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with(';') {
+            continue;
+        }
+        if t.ends_with(':') {
+            if cur.0 > best.0 {
+                best = cur;
+            }
+            cur = (0, 0);
+            continue;
+        }
+        cur.0 += 1;
+        cur.1 = cur.1.max(max_reg_used(t));
+    }
+    if cur.0 > best.0 {
+        best = cur;
+    }
+    best.1
+}
+
+const KOPT_FREEPICKS: usize = 8;
+
 fn post_sched2(s: &mut Search) {
     if s.size > MID || s.results.is_empty() {
         return;
@@ -1046,17 +1076,32 @@ fn post_sched2(s: &mut Search) {
         let text = std::fs::read_to_string(pth).unwrap();
         let r = sched2::optimize(&text, s.mc, &inputs, 4_000_000);
         eprintln!("S2FILE result: {}", r.as_deref().unwrap_or("None"));
+        for (nm, tx) in [("input", Some(text.clone())), ("sched2", r.clone())] {
+            if let Some(tx) = tx {
+                let sc = parse_program(&tx).ok().map(|np| compile_program(&np)).and_then(|cp| s.rf.score(&cp));
+                eprintln!("S2FILE score of {}: {:?}", nm, sc);
+            }
+        }
     }
     let mut picks: Vec<usize> = idx.iter().take(3).copied().collect();
     picks.extend(idx.iter().copied().filter(|i| !picks_has(&picks, *i) && s.results[*i].desc.contains("spillk: ") && !s.results[*i].desc.contains("spillk: 0")).take(2).collect::<Vec<_>>());
     // candidates that leave a machine register unused: sched2 can then hoist loads ahead of their uses (prefetch seeds) with the free name
     let kreg = mc.registers as usize;
-    let more: Vec<usize> = idx.iter().copied().filter(|i| !picks_has(&picks, *i) && max_reg_used(&s.results[*i].text) + 1 < kreg).take(3).collect();
+    let more: Vec<usize> = idx.iter().copied().filter(|i| !picks_has(&picks, *i) && max_reg_in_big_block(&s.results[*i].text) + 1 < kreg).take(KOPT_FREEPICKS).collect();
     picks.extend(more);
+    if std::env::var_os("KOPT_PROF").is_some() {
+        for &i in picks.iter() {
+            eprintln!("kopt-s2 candidate pick #{} score {:.0} maxreg {} {}", i, s.results[i].score, max_reg_in_big_block(&s.results[i].text), &s.results[i].desc[..s.results[i].desc.len().min(60)]);
+        }
+        let mut fr: Vec<(f64, usize)> = idx.iter().map(|&i| (s.results[i].score, i)).filter(|(_, i)| max_reg_in_big_block(&s.results[*i].text) + 1 < kreg).collect();
+        fr.truncate(14);
+        eprintln!("kopt-s2 free candidates by score: {:?}", fr);
+    }
     for &i in picks.iter() {
         let text = s.results[i].text.clone();
         let r = catch_unwind(AssertUnwindSafe(|| sched2::optimize(&text, mc, &inputs, 4_000_000)));
         let t2 = match r {
+            Ok(None) if std::env::var_os("KOPT_PROF").is_some() => { eprintln!("kopt-s2 pick #{} score {:.0} -> sched2 returned None", i, s.results[i].score); continue; }
             Ok(Some(t)) => t,
             _ => continue,
         };
@@ -1074,6 +1119,9 @@ fn post_sched2(s: &mut Search) {
             let sc = rf.score(&cp)?;
             Some((cp, np.instrs.len(), sc))
         }));
+        if std::env::var_os("KOPT_PROF").is_some() {
+            eprintln!("kopt-s2 pick #{} score {:.0} -> sched2 score {:?}", i, s.results[i].score, ok.as_ref().ok().and_then(|o| o.as_ref().map(|x| x.2)));
+        }
         if let Ok(Some((cp, size, sc))) = ok {
             s.n += 1;
             s.seen.insert(t2.clone(), sc);

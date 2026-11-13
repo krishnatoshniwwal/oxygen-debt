@@ -99,7 +99,7 @@ Sample total now 72,514 cycles (from 74,369 at the start of the loop), 0 failure
 | # | Item | Expected gain | Effort | Risk | State |
 |---|---|---|---|---|---|
 | 1 | Make single search candidates cheaper (5.0c) | none in cycles; keeps big programs under the time limit on a slower judge machine | medium | low | DONE for the shared prefix (`phase_a` cache, section 5.0d); incremental `ranges` not done (~15 %, skipped: risk) |
-| 2 | Spill-load hoisting for `spill_storm` (5.1) | 0.5-1 % | high | medium | stage 1 DONE (-0.3 % total); stage 2 (loop test overlap, icache index) open, see 5.1 |
+| 2 | Spill-load hoisting for `spill_storm` (5.1) | achieved -0.9 % total (spill_storm few_registers -37 %) | high | medium | DONE; leftovers (latch duplication budget, icache index) are small, see 5.1 |
 | 3 | `sieve` / `bubble_sort` (9.4 % / 6.1 % of cycles, ratio 0.25): look for a better inner-loop form | unknown, maybe 1 % | high | medium | not started |
 | 4 | Plan items of 5.4 (latch duplication, cost-based if-conversion, multiversioning on trip count, relational range facts) | unknown | high | medium | not started |
 | 5 | Magic division / signed div by constants (`algebra.rs`) | 0 on the bench (no program needs it), unknown on the judges' hidden programs | medium | low | not started; `factorial_mod` is not helped (5.1b) |
@@ -107,20 +107,17 @@ Sample total now 72,514 cycles (from 74,369 at the start of the loop), 0 failure
 Done and not worth repeating: peel 3-6 nest budgets (item 7 in section 4), determinism fix (5.0), WORK_BUDGET 10,000 (5.0b), extra unroll/ifc candidates (5.1c), `factorial_mod` magic mod (5.1b).
 
 ### 5.1 Hoist spill loads (`spill_storm` on few-register machines): stage 1 DONE (loop 3a009676 run 2), stage 2 open
-**Stage 1 (done).** `sched2.rs` `prefetch_order` seeds (program order with every load moved up to d = 1,2,3,4,6,8 places, `KOPT_NOPREFETCH=1` turns them off)
-are now part of `opt_block`; debug aids `KOPT_S2DEBUG=1` (per-seed result, `name_block` failures) and `KOPT_S2FILE=cand.kir` (run sched2 on one candidate
-file; with `KOPT_DUMP_ALL=DIR` to get candidates). Root cause of the old failure: the seeds only work when a *third temporary name* is free; the
-candidates sched2 got never had one (the best-scoring ones keep an accumulator in `v3`). Fix in `driver.rs::post_sched2`: besides the 3 best and the
-2 best `spillk` candidates, also re-schedule up to 3 candidates whose text uses fewer registers than the machine has (`max_reg_used`). Result: sample
-72,514 -> 72,302 (-0.3 %), 13 cases better, 1 worse (`matmul4|slow_memory` +20), nothing slower than the original; `spill_storm|few_registers` n=63 4,660 -> 4,230.
-**Stage 2 (open, ~66 cycles per iteration now, hand-written ~55, memory floor ~25).** What the trace shows for `spill_storm|few_registers`:
-(1) the loop test lives in its own block (`jmp for_head1`; load counter, load bound, `lt`, `br`): ~11 cycles per iteration of pure latency that sched2 cannot
-overlap with the body because it works per block; latch duplication (copy the test to the end of the body, `backend::tail_dup`) is blocked by the icache budget
-(`budget = icache - size`, here ~0) and the loose backend variants are never combined with the spill candidates; (2) instruction index >= `icache_size` (64) costs
-+2 per execution: entry (17 constant stores) + body + head = ~70 instructions, so the last ~5 instructions of the loop pay it every iteration (~10 cycles);
-a layout that puts the loop in front of the 12 constant stores is impossible (entry must stay first), so shrink the loop (drop the head block by duplicating the
-test, 3 instructions) instead; (3) the schedule itself is still latency bound with 3 temps. Tried and not kept: running the best free-register variants through
-the other `BACKENDS` (no gain, and unrestricted it overfits: `row_sums|no_fused` 498 -> 863 because a 250-line unrolled variant wins on kopt's timing inputs).
+**Result (DONE, loop 3a009676 runs 2-3).** `sched2.rs`: `prefetch_order` seeds (program order with each load moved up 1,2,3,4,6,8 places; `KOPT_NOPREFETCH=1` turns them off) in `opt_block`; dev aids
+`KOPT_S2DEBUG=1`, `KOPT_S2FILE=cand.kir` (runs sched2 on one candidate file and prints the exact score of input and result; get candidates with `KOPT_DUMP_ALL=DIR`).
+`driver.rs::post_sched2`: besides the 3 best and 2 best `spillk` candidates it re-schedules up to `KOPT_FREEPICKS` (8) candidates that leave a register free *in the largest block*
+(`max_reg_in_big_block`; the whole-program maximum was wrong: the exit block mentions spilled registers beyond K, which hid the best candidate). Why it works: the prefetch seeds need a
+third temporary name, and the all-spilled candidates have one; they score badly before sched2 (20,812) and well after (12,195 vs 15,624 for the old pick). `KOPT_PROF=1` prints every pick and its
+sched2 score (`kopt-s2 ...`). Numbers: sample 72,514 -> 71,845 (-0.9 % over runs 2-3), `spill_storm|few_registers` n=63 4,660 -> 2,911 (original 21,344; hand-written version was 3,497),
+10 cases better and 4 worse by <= 25 cycles in the last step, nothing slower than the original, fuzz clean, 28 unit tests, large programs unchanged.
+**Left over (small, ~4 % on this one program):** latch duplication on top: copying the loop test into the end of the body gave sched2 score 11,749 vs 12,195 on the same candidate
+(`backend::tail_dup` is limited by `budget = icache - size`, ~0 here); and instruction index >= `icache_size` costs +2 per execution (entry 17 stores + body + head ~ 70 > 64).
+Tried and not kept: running the best free-register variants through the other `BACKENDS` (restricted to spill variants: no gain; unrestricted: overfits, `row_sums|no_fused` 498 -> 863).
+
 ### 5.1c Extra unroll (3,6,16) and ifc (8,12) candidates: tried in loop iteration 6, no gain (do not repeat)
 
 Added after the walk from its final setting: 3 cases better (`rotate_array|slow_memory` 368 -> 350, `insertion_sort` -13), 3 worse (`lcm_pair` +12..+20 on three machines), total change about 0. Not kept.
