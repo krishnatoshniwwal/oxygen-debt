@@ -355,28 +355,56 @@ pub fn analyze(f: &mut Func) -> Vec<usize> {
     }
     f.arena[entry].idom = Some(entry);
     let mut changed = true;
+    // `stamp` marks the nodes already climbed while intersecting the predecessors of one block:
+    // a later climb that reaches a marked node lies below the running result, which then cannot
+    // change. This keeps a join with a huge fan-in linear instead of quadratic.
+    let mut stamp = vec![0u32; n];
+    let mut epoch = 0u32;
     while changed {
         changed = false;
         for &b in &rpo[1..] {
             let mut new: Option<usize> = None;
+            epoch += 1;
             for k in 0..f.arena[b].preds.len() {
                 let p = f.arena[b].preds[k];
                 if f.arena[p].idom.is_none() {
                     continue;
                 }
+                if new == Some(entry) {
+                    break;
+                }
                 match new {
-                    None => new = Some(p),
+                    None => {
+                        new = Some(p);
+                        stamp[p] = epoch;
+                    }
                     Some(nw) => {
+                        if stamp[p] == epoch {
+                            continue;
+                        }
                         let (mut x, mut y) = (p, nw);
+                        let mut below = false;
                         while x != y {
                             while f.arena[x].rpo > f.arena[y].rpo {
+                                stamp[x] = epoch;
                                 x = f.arena[x].idom.unwrap();
+                                if stamp[x] == epoch {
+                                    below = true;
+                                    break;
+                                }
+                            }
+                            if below {
+                                break;
                             }
                             while f.arena[y].rpo > f.arena[x].rpo {
+                                stamp[y] = epoch;
                                 y = f.arena[y].idom.unwrap();
                             }
                         }
-                        new = Some(x);
+                        new = if below { Some(nw) } else { Some(x) };
+                        if let Some(r) = new {
+                            stamp[r] = epoch;
+                        }
                     }
                 }
             }

@@ -24,7 +24,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 /// One setting of the optimizer's knobs.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Variant {
-    pub peel: u8,     // 0 = off, 1 = within the instruction cache, 2 = loose
+    pub peel: u8,     // 0 = off, 1 = within the instruction cache, 2 = loose, 3 = the enclosing loop nest stays within the instruction cache
     pub unroll: usize, // loop unrolling factor applied before the second SSA round
     pub ifc: usize,   // if-conversion: max instructions per side (0 = off)
     pub sched: bool,
@@ -44,12 +44,14 @@ pub struct Variant {
     pub alg: u8,     // loop algebra (algebra.rs), bit 1 = closed forms of polynomial loops
     pub tree: bool,  // tree-height reduction of add/mul/xor/and/or chains
     pub sccp: bool,  // optimistic conditional constant propagation combined with the ranges
+    pub spillk: u8,  // spill code: put the k least-touched loop-carried values in scratch at once (frees names for loads that run ahead)
+    pub reuse: u8,   // spill code: keep the last n loaded/stored scratch words available for later uses (0 = reload at every use)
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0 }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0 }
     }
 }
 
@@ -149,6 +151,14 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
                 lz = true;
             }
         }
+        if v.alg & 4 != 0 {
+            let rng = Ranges::new(f, 14);
+            if algebra::iv_divmod(f, &rng) {
+                chk(f, "iv_divmod");
+                scalar(f);
+                lz = true;
+            }
+        }
         let mut rng = Ranges::new(f, 14);
         prof("  ranges", &mut t);
         let c1 = passes2::range_simplify(f, &rng, v.csub);
@@ -199,12 +209,16 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func, String> {
     let mut t = prof_start();
     let ic = mc.icache_size;
-    let mut f = if v.thr > 0 && !light {
-        // DFA state splitting (control.rs) works before SSA, so it bypasses large.rs's cached start
-        let mut f = ir::from_program(prog);
+    let mut irr_f = if light { None } else { let mut g = ir::from_program(prog); if control::has_multi_entry(&mut g) { Some(g) } else { None } };
+    let mut f = if (v.thr > 0 || irr_f.is_some()) && !light {
+        // DFA state splitting and node splitting (control.rs) work before SSA, so they bypass large.rs's cached start
+        let mut f = irr_f.take().unwrap_or_else(|| ir::from_program(prog));
+        control::split_entries(&mut f, 24);
         let cap = (3 * ic).max(64) as usize;
-        for r in control::state_registers(&f, v.thr as usize) {
-            control::split_by_state(&mut f, r, cap);
+        if v.thr > 0 {
+            for r in control::state_registers(&f, v.thr as usize) {
+                control::split_by_state(&mut f, r, cap);
+            }
         }
         ssa::build_ssa(&mut f);
         f
@@ -216,14 +230,14 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     phase_a(&mut f, v, light);
     prof("phase_a total", &mut t);
     if v.peel != 0 {
-        let budget = if v.peel == 1 { ic } else { (4 * ic).max(256) } as usize;
+        let budget = if v.peel == 1 { ic } else if v.peel == 3 { 2 * ic } else { (4 * ic).max(256) } as usize; // peel 3: sizes are counted before clean-up, which roughly halves them
         for _ in 0..4 {
             let trips = passes3::find_const_trips(&mut f, 64);
             if trips.is_empty() {
                 break;
             }
             ssa::destruct_ssa(&mut f);
-            let ch = passes3::peel_const_loops(&mut f, &trips, budget, 16);
+            let ch = passes3::peel_const_loops(&mut f, &trips, budget, 16, v.peel == 3);
             ssa::build_ssa(&mut f);
             phase_a(&mut f, v, false);
             if !ch {
@@ -310,7 +324,7 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     prof("destruct_ssa", &mut t);
     let k = mc.registers as usize;
     let force = if scratch_ok { v.spill1 as usize } else { 0 };
-    f.nreg = ssa::allocate(&mut f, Some(k), v.spill && scratch_ok, v.hot, force)?;
+    f.nreg = ssa::allocate(&mut f, Some(k), v.spill && scratch_ok, v.hot, force, v.reuse as usize, if scratch_ok { v.spillk as usize } else { 0 })?;
     prof("allocate", &mut t);
     backend::final_cleanup(&mut f);
     prof("final_cleanup", &mut t);
@@ -348,8 +362,8 @@ const BACKENDS: [(usize, usize, bool); 9] = [
     (4, 2, false),
     (4, 4, false),
     (4, 8, false),
-    (12, 2, false),
     (4, 2, true),
+    (12, 2, false),
     (12, 1, true),
 ];
 
@@ -655,6 +669,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             }
         }
     }
+    let mut early_b: Option<Variant> = None;
     if size <= MID {
         let over_k = |s: &Search, v: &Variant| -> bool {
             match s.mids.get(v) {
@@ -667,7 +682,10 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, Variant { alg: 1, ..b });
         let b = state.0;
         consider(&mut s, &mut state, Variant { alg: b.alg | 2, ..b });
+        let b = state.0;
+        consider(&mut s, &mut state, Variant { alg: b.alg | 4, ..b });
         if over_k(&s, &state.0) {
+            early_b = Some(state.0);
             // More names than registers. Spilling to scratch is one answer; keeping the
             // program order (scheduling stretches live ranges) and giving hot values the low
             // names (LRU register file) are others. Try them before the search settles.
@@ -761,7 +779,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             for ifc in [0, 4] {
                 nb.push(Variant { ifc, ..b });
             }
-            for pl in [0u8, 1, 2] {
+            for pl in [0u8, 1, 2, 3] {
                 nb.push(Variant { peel: pl, ..b });
             }
             nb.push(Variant { sched: !b.sched, ..b });
@@ -774,6 +792,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { lazy: !b.lazy, ..b });
             nb.push(Variant { alg: b.alg ^ 1, ..b });
             nb.push(Variant { alg: b.alg ^ 2, ..b });
+            nb.push(Variant { alg: b.alg ^ 4, ..b });
             nb.push(Variant { sccp: !b.sccp, ..b });
             nb.push(Variant { tree: !b.tree, ..b });
             for t in [0u8, 1, 2] {
@@ -811,6 +830,59 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         if let Some(sc) = s.run(&v, BACKENDS[0]) {
             if state.1.map_or(true, |b| sc < b - 1e-9) {
                 *state = (v, Some(sc));
+            }
+        }
+    }
+    if size <= MID && std::env::var_os("KOPT_NOPEEL3").is_none() {
+        // Full peeling of inner constant-trip loops while the enclosing nest fits the cache
+        // (unroll-and-jam in effect: the outer loop's invariant loads end up in registers). Such a
+        // candidate often needs more names than registers, which the walk's neighbours would only
+        // fix if it were already the best, so the pressure settings are tried together with it.
+        let b = state.0;
+        for sp in [false, true] {
+            for hot in [false, true] {
+                for sch in [true, false] {
+                    let v = Variant { peel: 3, spill: sp, hot, sched: sch, ..b };
+                    if v != b {
+                        consider2(&mut s, &mut state, v);
+                    }
+                }
+            }
+        }
+        let cur = state.0;
+        if cur.peel == 3 {
+            for r in [2u8, 3] {
+                consider2(&mut s, &mut state, Variant { spill: true, reuse: r, ..cur });
+            }
+        }
+    }
+    if size <= MID && std::env::var_os("KOPT_NOREUSE").is_none() {
+        // Reload cache in the spill code (ssa.rs rewrite_spills): after the general search, on its
+        // final setting, so that it can only add candidates (it never changes the path of the walk).
+        let b = state.0;
+        let mut bases = vec![b];
+        if let Some(e) = early_b {
+            if e != b {
+                bases.push(e);
+            }
+        }
+        for base in bases {
+            for r in [2u8, 3, 4] {
+                // program order (sched: false) keeps a rolling pattern of loads; scheduling hoists
+                // the loads and stretches the live ranges
+                for sch in [base.sched, false] {
+                    let v = Variant { spill: true, reuse: r, sched: sch, ..base };
+                    if v != b {
+                        consider2(&mut s, &mut state, v);
+                    }
+                }
+                // also spill one more value, so that a third temporary is free for loads that run ahead
+                for s1 in [1u8, 2, 3, 6, 12, 13, 14] {
+                    let v = Variant { spill: true, reuse: r, sched: false, spillk: s1, ..base };
+                    if v != b {
+                        consider2(&mut s, &mut state, v);
+                    }
+                }
             }
         }
     }
@@ -897,6 +969,10 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
 
 /// sched2 (exact-cost reordering and renaming) on the best candidates found so far. Each result
 /// is a new candidate: it is kept only if it measures faster, like every other candidate.
+fn picks_has(v: &[usize], i: usize) -> bool {
+    v.contains(&i)
+}
+
 fn post_sched2(s: &mut Search) {
     if s.size > MID || s.results.is_empty() {
         return;
@@ -912,7 +988,11 @@ fn post_sched2(s: &mut Search) {
     });
     let mc = s.mc;
     let nparams = s.prog.params.len();
-    for &i in idx.iter().take(3) {
+    // the three best candidates, plus the two best that spill everything into scratch: their order
+    // is only good after this pass moves the loads ahead of their uses
+    let mut picks: Vec<usize> = idx.iter().take(3).copied().collect();
+    picks.extend(idx.iter().copied().filter(|i| !picks_has(&picks, *i) && s.results[*i].desc.contains("spillk: ") && !s.results[*i].desc.contains("spillk: 0")).take(2).collect::<Vec<_>>());
+    for &i in picks.iter() {
         let text = s.results[i].text.clone();
         let r = catch_unwind(AssertUnwindSafe(|| sched2::optimize(&text, mc, &inputs, 4_000_000)));
         let t2 = match r {

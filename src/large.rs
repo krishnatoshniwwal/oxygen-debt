@@ -125,7 +125,8 @@ pub fn too_hostile(prog: &Program) -> bool {
             }
         }
     }
-    worst > 4000
+    let lim = std::env::var("KOPT_HOSTILE").ok().and_then(|v| v.parse().ok()).unwrap_or(40000usize);
+    worst > lim
 }
 
 // ---------------------------------------------------------------------------

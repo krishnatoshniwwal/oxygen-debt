@@ -928,6 +928,7 @@ pub struct Opt<'a> {
     rng: Rng,
     pub max_steps: u64,
     pub evals: u64,
+    peep: bool,
 }
 
 impl<'a> Opt<'a> {
@@ -946,7 +947,7 @@ impl<'a> Opt<'a> {
             seqs.push(seq);
             occ.push(o);
         }
-        Opt { net, mc, sim, lv, seqs, occ, rng: Rng::new(0x5EED_5C4D), max_steps, evals: 0 }
+        Opt { net, mc, sim, lv, seqs, occ, rng: Rng::new(0x5EED_5C4D), max_steps, evals: 0, peep: std::env::var_os("KOPT_NOPP2").is_none() }
     }
 
     fn windows(&self, b: usize) -> Vec<Window> {
@@ -1001,6 +1002,8 @@ impl<'a> Opt<'a> {
                 continue;
             }
             let code = reg.apply(order, &names);
+            // score the code as it will end up: reloads of values still held in a name are gone
+            let code = if self.peep { peep_block(code).0 } else { code };
             let c = self.eval(reg.b, code.clone(), wins);
             if best.as_ref().map_or(true, |x| c < x.0) {
                 best = Some((c, code));
@@ -1406,73 +1409,80 @@ mod tests {
 /// (or a constant), as long as nothing that may write A and no write of that name lies between.
 /// Then a `store A, _` to a scratch word (>= 3072) that no load can read any more (every load of
 /// the program has a literal address, and none names A) is removed. Returns true if changed.
-pub fn spill_peephole(net: &mut Net) -> bool {
+/// The block-local part of `spill_peephole`: returns the rewritten block and whether it changed.
+pub fn peep_block(old: Vec<Ins>) -> (Vec<Ins>, bool) {
     #[derive(Clone, Copy)]
     enum V {
         N(i32),
         C(i64),
     }
     let mut changed = false;
-    for bl in net.blocks.iter_mut() {
-        let mut held: Vec<(i64, V)> = Vec::new();
-        let old = std::mem::take(bl);
-        let mut out: Vec<Ins> = Vec::with_capacity(old.len());
-        for mut ins in old {
-            match ins.op {
-                Op::Load => {
-                    if let Opd::L(a) = ins.a[0] {
-                        if (a as u64) < MEM_WORDS as u64 {
-                            let hit = held.iter().find(|h| h.0 == a).map(|h| h.1);
-                            if let Some(v) = hit {
-                                changed = true;
-                                match v {
-                                    V::N(y) if y == ins.d => {
-                                        continue; // already in place
-                                    }
-                                    V::N(y) => {
-                                        ins.op = Op::Mov;
-                                        ins.a[0] = Opd::R(y);
-                                    }
-                                    V::C(c) => {
-                                        ins.op = Op::Const;
-                                        ins.a[0] = Opd::L(c);
-                                    }
+    let mut held: Vec<(i64, V)> = Vec::new();
+    let mut out: Vec<Ins> = Vec::with_capacity(old.len());
+    for mut ins in old {
+        match ins.op {
+            Op::Load => {
+                if let Opd::L(a) = ins.a[0] {
+                    if (a as u64) < MEM_WORDS as u64 {
+                        let hit = held.iter().find(|h| h.0 == a).map(|h| h.1);
+                        if let Some(v) = hit {
+                            changed = true;
+                            match v {
+                                V::N(y) if y == ins.d => {
+                                    continue; // already in place
+                                }
+                                V::N(y) => {
+                                    ins.op = Op::Mov;
+                                    ins.a[0] = Opd::R(y);
+                                }
+                                V::C(c) => {
+                                    ins.op = Op::Const;
+                                    ins.a[0] = Opd::L(c);
                                 }
                             }
-                            let d = ins.d;
-                            held.retain(|h| !matches!(h.1, V::N(y) if y == d));
-                            if hit.is_none() {
-                                held.retain(|h| h.0 != a);
-                                held.push((a, V::N(d)));
-                            }
-                            out.push(ins);
-                            continue;
                         }
-                    }
-                }
-                Op::Store => {
-                    match ins.a[0] {
-                        Opd::L(a) if (a as u64) < MEM_WORDS as u64 => {
+                        let d = ins.d;
+                        held.retain(|h| !matches!(h.1, V::N(y) if y == d));
+                        if hit.is_none() {
                             held.retain(|h| h.0 != a);
-                            match ins.a[1] {
-                                Opd::R(x) => held.push((a, V::N(x))),
-                                Opd::L(c) => held.push((a, V::C(c))),
-                            }
+                            held.push((a, V::N(d)));
                         }
-                        _ => held.clear(),
+                        out.push(ins);
+                        continue;
                     }
-                    out.push(ins);
-                    continue;
                 }
-                _ => {}
             }
-            if ins.d >= 0 {
-                let d = ins.d;
-                held.retain(|h| !matches!(h.1, V::N(y) if y == d));
+            Op::Store => {
+                match ins.a[0] {
+                    Opd::L(a) if (a as u64) < MEM_WORDS as u64 => {
+                        held.retain(|h| h.0 != a);
+                        match ins.a[1] {
+                            Opd::R(x) => held.push((a, V::N(x))),
+                            Opd::L(c) => held.push((a, V::C(c))),
+                        }
+                    }
+                    _ => held.clear(),
+                }
+                out.push(ins);
+                continue;
             }
-            out.push(ins);
+            _ => {}
         }
-        *bl = out;
+        if ins.d >= 0 {
+            let d = ins.d;
+            held.retain(|h| !matches!(h.1, V::N(y) if y == d));
+        }
+        out.push(ins);
+    }
+    (out, changed)
+}
+
+pub fn spill_peephole(net: &mut Net) -> bool {
+    let mut changed = false;
+    for bl in net.blocks.iter_mut() {
+        let (nb, ch) = peep_block(std::mem::take(bl));
+        *bl = nb;
+        changed |= ch;
     }
     // dead scratch stores
     let mut read: std::collections::HashSet<i64> = std::collections::HashSet::new();
@@ -1513,7 +1523,19 @@ pub fn optimize(text: &str, mc: &Machine, inputs: &[Inputs], max_steps: u64) -> 
         }
     }
     match optimize_inner(&cur, mc, inputs, max_steps) {
-        Some(t) => Some(t),
+        Some(t) => {
+            // Reordering and renaming can leave reloads of values that are still in a name:
+            // run the peephole once more on the result.
+            if std::env::var_os("KOPT_NOPP").is_none() {
+                if let Ok(p) = parse_program(&t) {
+                    let mut net = Net::from_program(&p);
+                    if spill_peephole(&mut net) {
+                        return Some(net.to_text());
+                    }
+                }
+            }
+            Some(t)
+        }
         None => {
             if changed {
                 Some(cur)

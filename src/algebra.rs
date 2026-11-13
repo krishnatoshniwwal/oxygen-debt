@@ -796,6 +796,124 @@ pub fn div_const(f: &mut Func, rng: &Ranges) -> bool {
     changed
 }
 
+/// `i / c` and `i % c` of an induction variable `i = phi(i0, i + 1)` (c a literal >= 2, i0 a
+/// literal in [0, 2^31), i proven in [0, 2^31) where used) become counters that step and wrap:
+///   r' = r + 1; w = (r' == c); r = select(w, 0, r');  q = q + w
+/// with r0 = i0 % c, q0 = i0 / c. Removes a `lat_div` operation per iteration. Exact because for
+/// non-negative i the signed div/mod are the ordinary ones and (q, r) = divmod(i, c) steps like this.
+pub fn iv_divmod(f: &mut Func, rng: &Ranges) -> bool {
+    if !rng.ok {
+        return false;
+    }
+    let _ = analyze(f);
+    let nv0 = f.nval.max(0) as usize + 1;
+    let mut rep = vec![NOREP; nv0];
+    let mut changed = false;
+    for li in 0..f.loops.len() {
+        let h = f.loops[li].header;
+        let ids = f.loops[li].ids.clone();
+        let blocks = f.loops[li].blocks.clone();
+        let preds = f.arena[h].preds.clone();
+        if preds.len() != 2 {
+            continue;
+        }
+        let po = match preds.iter().position(|p| !ids.contains(p)) {
+            Some(i) => i,
+            None => continue,
+        };
+        let pi = 1 - po;
+        if !ids.contains(&preds[pi]) {
+            continue;
+        }
+        let phis = f.arena[h].phis.clone();
+        for phi in phis {
+            let i = phi.d;
+            let (i0, inext) = (phi.a[po], phi.a[pi]);
+            if i0 >= 0 || (!i0) > SMAX || inext < 0 {
+                continue;
+            }
+            // location of inext = i + 1
+            let mut loc: Option<(usize, usize)> = None;
+            for &b in &blocks {
+                if let Some(k) = f.arena[b].ins.iter().position(|x| x.d == inext) {
+                    loc = Some((b, k));
+                }
+            }
+            let (nb, nk) = match loc {
+                Some(l) => l,
+                None => continue,
+            };
+            {
+                let x = &f.arena[nb].ins[nk];
+                if x.op != Op::Add || !((x.a[0] == i && x.a[1] == L1) || (x.a[1] == i && x.a[0] == L1)) {
+                    continue;
+                }
+            }
+            // uses: div/mod of i by a literal
+            let mut cs: Vec<u64> = Vec::new();
+            let mut uses: Vec<(i64, Op, u64)> = Vec::new();
+            for &b in &blocks {
+                for x in &f.arena[b].ins {
+                    if (x.op == Op::Div || x.op == Op::Mod) && x.a[0] == i && x.a[1] < 0 {
+                        let c = !x.a[1] as u64;
+                        if c >= 2 && c <= 4096 && rng.get(i, b).1 <= SMAX {
+                            uses.push((x.d, x.op, c));
+                            if !cs.contains(&c) {
+                                cs.push(c);
+                            }
+                        }
+                    }
+                }
+            }
+            if cs.is_empty() || cs.len() > 2 {
+                continue;
+            }
+            let i0v = !i0 as u64;
+            let mut at = nk + 1;
+            for &c in &cs {
+                let need_q = uses.iter().any(|u| u.2 == c && u.1 == Op::Div);
+                let r = f.new_val();
+                let rn = f.new_val();
+                let w = f.new_val();
+                let rnext = f.new_val();
+                let mut newins = vec![
+                    Instr::new(Op::Add, rn, vec![r, L1], vec![]),
+                    Instr::new(Op::Eq, w, vec![rn, lit(c as i64)], vec![]),
+                    Instr::new(Op::Select, rnext, vec![w, L0, rn], vec![]),
+                ];
+                let mk_phi = |d: i64, init: u64, nxt: i64| -> Instr {
+                    Instr::new(Op::Phi, d, (0..2).map(|j| if j == po { lit(init as i64) } else { nxt }).collect(), vec![])
+                };
+                f.arena[h].phis.push(mk_phi(r, i0v % c, rnext));
+                let mut q = NOREP;
+                if need_q {
+                    q = f.new_val();
+                    let qn = f.new_val();
+                    newins.push(Instr::new(Op::Add, qn, vec![q, w], vec![]));
+                    f.arena[h].phis.push(mk_phi(q, i0v / c, qn));
+                }
+                let n = newins.len();
+                for (k, ins) in newins.into_iter().enumerate() {
+                    f.arena[nb].ins.insert(at + k, ins);
+                }
+                at += n;
+                rep.resize(f.nval.max(0) as usize + 1, NOREP);
+                for &(d, op, cc) in &uses {
+                    if cc == c {
+                        rep[d as usize] = if op == Op::Mod { r } else { q };
+                    }
+                }
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        rep.resize(f.nval.max(0) as usize + 1, NOREP);
+        apply_rep(f, &rep);
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

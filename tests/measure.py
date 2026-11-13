@@ -39,7 +39,7 @@ def variants(inp, n, seed):
 def main():
     kopt, outp = sys.argv[1], sys.argv[2]
     only = sys.argv[4] if len(sys.argv) > 4 and sys.argv[3] == '--only' else None
-    machines = sorted(glob.glob(os.path.join(ROOT, 'kit/machines/*.cfg')))
+    machines = sorted(glob.glob(os.path.join(os.environ.get('MACH_DIR') or os.path.join(ROOT, 'kit/machines'), '*.cfg')))
     progs = sorted(glob.glob(os.path.join(ROOT, 'kit/bench/*.kir')))
     if only:
         progs = [p for p in progs if only in p]

@@ -1202,7 +1202,7 @@ x:
         }
         ssa::check_ssa(&mut f).unwrap();
         ssa::destruct_ssa(&mut f);
-        ssa::allocate(&mut f, None, false, false, 0).unwrap();
+        ssa::allocate(&mut f, None, false, false, 0, 0, 0).unwrap();
         to_text(&f)
     }
 

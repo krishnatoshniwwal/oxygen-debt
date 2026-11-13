@@ -166,6 +166,124 @@ pub fn split_by_state(f: &mut Func, r: i64, cap: usize) -> bool {
     true
 }
 
+
+/// Strongly connected components with more than one block or a self edge (iterative Tarjan).
+fn cyclic_sccs(f: &Func) -> Vec<Vec<usize>> {
+    let n = f.arena.len();
+    let (mut idx, mut low) = (vec![usize::MAX; n], vec![0usize; n]);
+    let mut on = vec![false; n];
+    let (mut st, mut out): (Vec<usize>, Vec<Vec<usize>>) = (Vec::new(), Vec::new());
+    let mut next = 0;
+    for &root in &f.blocks {
+        if idx[root] != usize::MAX {
+            continue;
+        }
+        let mut call: Vec<(usize, usize)> = vec![(root, 0)];
+        idx[root] = next;
+        low[root] = next;
+        next += 1;
+        st.push(root);
+        on[root] = true;
+        while let Some(&(b, i)) = call.last() {
+            let ss = f.arena[b].succs();
+            if i < ss.len() {
+                call.last_mut().unwrap().1 += 1;
+                let s = ss[i];
+                if idx[s] == usize::MAX {
+                    idx[s] = next;
+                    low[s] = next;
+                    next += 1;
+                    st.push(s);
+                    on[s] = true;
+                    call.push((s, 0));
+                } else if on[s] {
+                    low[b] = low[b].min(idx[s]);
+                }
+            } else {
+                call.pop();
+                if let Some(&(p, _)) = call.last() {
+                    low[p] = low[p].min(low[b]);
+                }
+                if low[b] == idx[b] {
+                    let mut comp = Vec::new();
+                    loop {
+                        let x = st.pop().unwrap();
+                        on[x] = false;
+                        comp.push(x);
+                        if x == b {
+                            break;
+                        }
+                    }
+                    if comp.len() > 1 || f.arena[b].succs().contains(&b) {
+                        out.push(comp);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Blocks of the cycle `scc` that are entered from outside it (the entry block counts as entered).
+fn scc_entries(f: &Func, scc: &[usize]) -> Vec<usize> {
+    let inside: std::collections::HashSet<usize> = scc.iter().copied().collect();
+    let mut ent: Vec<usize> = Vec::new();
+    for &b in scc {
+        let from_out = b == f.blocks[0] || f.arena[b].preds.iter().any(|p| !inside.contains(p));
+        if from_out {
+            ent.push(b);
+        }
+    }
+    ent.sort();
+    ent
+}
+
+/// True if some cycle has more than one entrance (irreducible control flow).
+pub fn has_multi_entry(f: &mut Func) -> bool {
+    compute_preds(f);
+    cyclic_sccs(f).iter().any(|s| scc_entries(f, s).len() > 1)
+}
+
+/// Node splitting: for a cycle with several entrances keep the first (lowest block id, i.e.
+/// first in the source) as the header and give every other entrance block E (at most `maxlen`
+/// instructions) a copy E' that takes over all edges from outside the cycle. E' is not part of
+/// the cycle, which now has one entrance, so the loop passes apply. Pure copying.
+pub fn split_entries(f: &mut Func, maxlen: usize) -> bool {
+    compute_preds(f);
+    let mut changed = false;
+    for scc in cyclic_sccs(f) {
+        let ent = scc_entries(f, &scc);
+        if ent.len() < 2 {
+            continue;
+        }
+        let inside: std::collections::HashSet<usize> = scc.iter().copied().collect();
+        for &e in &ent[1..] {
+            if e == f.blocks[0] || f.arena[e].ins.len() > maxlen {
+                continue;
+            }
+            let outs: Vec<usize> = f.arena[e].preds.iter().copied().filter(|p| !inside.contains(p)).collect();
+            if outs.is_empty() {
+                continue;
+            }
+            let nb = f.new_block(&format!("{}_e", f.arena[e].name));
+            f.arena[nb].ins = f.arena[e].ins.clone();
+            f.blocks.push(nb);
+            for p in outs {
+                for t in f.arena[p].ins.last_mut().unwrap().t.iter_mut() {
+                    if *t == e {
+                        *t = nb;
+                    }
+                }
+            }
+            changed = true;
+        }
+    }
+    if changed {
+        compute_preds(f);
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

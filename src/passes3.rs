@@ -307,13 +307,17 @@ pub fn peel(f: &mut Func, header: usize, n: usize) -> bool {
 
 /// Non-SSA form: fully peel loops with a small constant trip count (innermost first) while
 /// the program stays within `budget` instructions. Returns true if anything changed.
-pub fn peel_const_loops(f: &mut Func, trips: &BTreeMap<usize, usize>, budget: usize, maxtrip: usize) -> bool {
+///
+/// `nest`: the budget applies to the outermost loop that contains the loop being peeled (the code
+/// that runs repeatedly and has to stay in the instruction cache), not to the whole program.
+pub fn peel_const_loops(f: &mut Func, trips: &BTreeMap<usize, usize>, budget: usize, maxtrip: usize, nest: bool) -> bool {
     if trips.is_empty() {
         return false;
     }
     compute_preds(f);
     analyze(f);
     let mut size = f.count_instrs();
+    let mut root_added: HashMap<usize, usize> = HashMap::new();
     let mut order: Vec<usize> = (0..f.loops.len()).collect();
     order.sort_by_key(|&i| (std::cmp::Reverse(f.loops[i].depth), f.arena[f.loops[i].header].rpo));
     let mut changed = false;
@@ -331,11 +335,21 @@ pub fn peel_const_loops(f: &mut Func, trips: &BTreeMap<usize, usize>, budget: us
             continue;
         }
         let lsize: usize = f.loops[li].blocks.iter().map(|&b| f.arena[b].ins.len()).sum();
-        if size + n * lsize > budget {
+        let mut root = li;
+        while let Some(p) = f.loops[root].parent {
+            root = p;
+        }
+        if nest {
+            let rsize: usize = f.loops[root].blocks.iter().map(|&b| f.arena[b].ins.len()).sum::<usize>() + root_added.get(&root).copied().unwrap_or(0);
+            if rsize + n * lsize > budget {
+                continue;
+            }
+        } else if size + n * lsize > budget {
             continue;
         }
         if peel(f, header, n) {
             size += n * lsize;
+            *root_added.entry(root).or_insert(0) += n * lsize;
             changed = true;
             let add: Vec<usize> = f.loops.iter().filter(|l2| l2.ids.contains(&header)).flat_map(|l2| l2.ids.iter().copied()).collect();
             done_ids.extend(add);
