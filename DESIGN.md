@@ -749,3 +749,38 @@ B = A + floor((2^31-1)/c)); the branch form swaps its targets. Exact for SIGNED 
 p read as signed lies in [-A, B-A] (c*p is then in int32 range and congruent to x, hence equal). Cost lat_mul + 2 ALU.
 Tests: `cargo test divtest` (8-bit analogue, all odd c and all x; 32-bit edge/random for ~1200 c), `tests/alg_divtest.py`.
 Bench: 0 changed cases (fires on no bench program); kfuzz gen/mutate/machines n=300 seed 9: no new problems.
+
+## finite.rs - exhaustive specialization of a proven finite input domain (last step of `driver::optimize`)
+**What it does.** After the normal search has chosen its best output, `finite::improve` looks at the ORIGINAL program.
+If the function can only depend on at most 12 input bits, it runs the original on every one of those 2^k inputs and
+emits an equivalent decision tree over the input bits (identical subtrees are shared). A leaf either returns a literal
+or extracts a field from one 32-bit packed literal using the low key bits (`shr t, PACKED, idx*w; and t, t, 2^w-1; add t, t, lo`).
+Nothing is precomputed ahead of time and no program is recognized by name, label or hash: the table is derived at
+compile time from the program that `kopt` is given, and verified against it (cf. the organisers' ruling on table-based
+CRC summarisation).
+
+**Which fact makes it safe.** Precondition, checked structurally: no `load/store/vload/vstore/trap`, the entry block is
+never a branch target, and for each parameter p every read of p before p is first redefined in the entry block is
+`and _, p, M` where M is a literal or an entry-block constant register (either operand order); if p is not redefined
+in the entry block it is not read anywhere else. Operands are read before the destination is written and every other
+register starts at 0 (KIR_SPEC section 2), so the whole execution is a function of `p & M_p` for all p. The total
+number of mask bits k is at most 12. Every one of the 2^k representative runs must return normally (no trap, no
+time-out, at most 20,000 steps each and 4,000,000 in total), otherwise the pass gives up. The emitted program reads
+only masked bits, so checking it on all 2^k representatives (the pass does this, comparing return values) proves it
+equal to the original on all 2^32 values of every argument. It contains no memory or volatile instructions, so memory
+and the volatile log are unchanged, as in the original.
+
+**Choice.** Variants with 0..5 packed key bits per leaf and field widths 1..32 bits are tried; a candidate is kept
+only if its cycle count summed over the whole input domain (the kit timing model, including icache penalties) is
+strictly lower than that of the search's best output. Instruction budget 4096 per candidate.
+
+**Cost.** Structural check O(n). If it applies: 2^k runs of the original (bounded by 4M interpreted steps), and for each
+of at most 21 variants a tree of O(2^k) instructions checked and timed on 2^k inputs. k <= 12, so this is bounded by a
+constant; it does not depend on n beyond the O(n) scan. Large programs: no effect, at most +0.2 s.
+
+**Measured** (sample cycles, 100 programs x 5 machines): 67,691 -> 52,577 (-22.3%); 54 cases better, 0 worse, 0 fails.
+`spill_storm` 3,592-5,356 -> 109, `count_divisors` 1,734-4,202 -> 136, `collatz` 616 -> about 40 averaged over the domain.
+Checks: `tests/measure.py` (kit interpreter, sample + 3 variants + 60 random inputs, 500 cases, 0 mismatches); the 54
+changed outputs against the originals with the kit interpreter on all 4096 low-12-bit values plus 300 random 32-bit
+inputs each (237,384 runs, 0 mismatches); 500/500 outputs identical on a second run; 40 cargo tests pass.
+`KOPT_NOFINITE=1` disables it, `KOPT_DEBUG_FINITE=1` prints its decisions.
