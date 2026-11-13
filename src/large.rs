@@ -14,7 +14,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 static START: OnceLock<Instant> = OnceLock::new();
-static SOFT_LIMIT_MS: Mutex<u64> = Mutex::new(u64::MAX);
 static BEST: Mutex<Option<(f64, String)>> = Mutex::new(None);
 
 /// Call first thing in main: the deadline counts from process start.
@@ -24,17 +23,6 @@ pub fn start() {
 
 pub fn elapsed_ms() -> u64 {
     START.get().map_or(0, |s| s.elapsed().as_millis() as u64)
-}
-
-/// True when the search should stop starting new work (the hard deadline is at ~1.5x this).
-pub fn soft_expired() -> bool {
-    elapsed_ms() >= *SOFT_LIMIT_MS.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// True when another step that takes about `cost_ms` still fits in half of the soft limit.
-pub fn fits_half(cost_ms: u64) -> bool {
-    let soft = *SOFT_LIMIT_MS.lock().unwrap_or_else(|e| e.into_inner());
-    soft == u64::MAX || elapsed_ms() + cost_ms <= soft / 2
 }
 
 /// Hard deadline in milliseconds for an input of this many instructions. Normal programs get
@@ -84,7 +72,6 @@ where
 {
     let n = input.bytes().filter(|&c| c == b'\n').count();
     let hard = hard_limit_ms(n);
-    *SOFT_LIMIT_MS.lock().unwrap_or_else(|e| e.into_inner()) = hard * 2 / 3;
     let (tx, rx) = mpsc::channel::<Result<String, String>>();
     let spawned = std::thread::Builder::new().stack_size(256 << 20).spawn(move || {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));

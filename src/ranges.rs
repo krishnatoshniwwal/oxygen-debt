@@ -7,6 +7,15 @@
 use crate::ir::*;
 use crate::kir::*;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Deterministic work counter: instructions visited by the interval fixpoint (read and reset by
+/// `take_work`). The search budget for large programs counts it, so that it follows the real cost.
+static WORK: AtomicU64 = AtomicU64::new(0);
+
+pub fn take_work() -> u64 {
+    WORK.swap(0, Ordering::Relaxed)
+}
 
 pub const SMAX: i64 = 0x7FFF_FFFF;
 pub type Iv = (i64, i64);
@@ -558,6 +567,7 @@ impl Ranges {
                 self.cup[b] = None;
             }
             let blk = &f.arena[b];
+            WORK.fetch_add((blk.phis.len() + blk.ins.len()) as u64, Ordering::Relaxed);
             for phi in &blk.phis {
                 let new = self.phi_range(phi, b);
                 if self.update(phi.d, new, narrowing, counts) {

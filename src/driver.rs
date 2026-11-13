@@ -430,6 +430,7 @@ struct Search<'a> {
     size: usize,
     light: bool,
     spent: usize,
+    last_cost: usize, // `spent` used by the previous candidate (predicts the next one)
 }
 
 fn panic_msg(e: &Box<dyn std::any::Any + Send>) -> String {
@@ -443,6 +444,23 @@ fn panic_msg(e: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 impl<'a> Search<'a> {
+    /// Work of the interval analysis since the last call, in `spent` units. Only counted for
+    /// large programs, so the budget of normal programs (and their output) stays as it was.
+    fn range_work(&self) -> usize {
+        let w = crate::ranges::take_work() as usize;
+        if self.size > MID {
+            w / RANGE_DIV
+        } else {
+            0
+        }
+    }
+
+    /// Large programs: may another candidate be started? Deterministic (work units, not time): the
+    /// work spent so far plus the cost of the previous candidate must stay within LARGE_BUDGET.
+    fn can_start(&self) -> bool {
+        self.size <= MID || self.spent + self.last_cost <= LARGE_BUDGET
+    }
+
     fn mid(&mut self, v: &Variant) {
         if self.mids.contains_key(v) {
             return;
@@ -450,7 +468,7 @@ impl<'a> Search<'a> {
         let r = catch_unwind(AssertUnwindSafe(|| midend(self.prog, self.mc, v, self.light, &mut self.pa)));
         match r {
             Ok(Ok(f)) => {
-                self.spent += self.size + f.count_instrs();
+                self.spent += self.size + f.count_instrs() + self.range_work();
                 self.mids.insert(*v, Some(f));
             }
             other => {
@@ -500,6 +518,13 @@ impl<'a> Search<'a> {
 
     /// Score one (variant, backend) pair. Returns the score or None.
     fn run(&mut self, v: &Variant, be: Backend) -> Option<f64> {
+        let spent0 = self.spent;
+        let r = self.run_inner(v, be);
+        self.last_cost = self.spent - spent0;
+        r
+    }
+
+    fn run_inner(&mut self, v: &Variant, be: Backend) -> Option<f64> {
         self.mid(v);
         let mut f = match self.mids.get(v).unwrap() {
             Some(f0) => f0.clone(),
@@ -574,7 +599,7 @@ impl<'a> Search<'a> {
 fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: usize) {
     // Hot/cold layout (large.rs): the best setting again, with the loops moved in front of
     // run-once code. Needs no new mid-end run (the mids are kept).
-    if size as i64 > mc.icache_size && !(size > MID && large::soft_expired()) {
+    if size as i64 > mc.icache_size && s.can_start() {
         let v = v0x;
         for lm in [1u8, 2] {
             large::set_layout(lm);
@@ -588,7 +613,7 @@ fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: u
         let saved = std::mem::take(&mut s.mids);
         let cap = if size > MID { 14 * size + 10_000 } else { usize::MAX };
         for mode in [1u8, 2, 3] {
-            if (size > MID && large::soft_expired()) || s.spent > cap {
+            if !s.can_start() || s.spent > cap {
                 break;
             }
             large::set_roll(mode);
@@ -603,7 +628,7 @@ fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: u
             }
             vs.dedup();
             for v in vs {
-                if (size > MID && large::soft_expired()) || s.spent > cap {
+                if !s.can_start() || s.spent > cap {
                     break;
                 }
                 s.run(&v, b0);
@@ -619,6 +644,8 @@ fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: u
     }
 }
 
+const LARGE_BUDGET: usize = 2_400_000; // large programs: the search starts no new candidate beyond this many work units
+const RANGE_DIV: usize = 4; // interval-analysis visits per unit of `spent` (large programs only)
 const WORK_BUDGET: usize = 16000; // the search stops when this much work has been spent
 
 /// Return the optimized program text. Falls back to the input text on any problem.
@@ -649,6 +676,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         size,
         light: size > BIG,
         spent: 0,
+        last_cost: 0,
     };
     let b0 = BACKENDS[0];
     let v0 = if size > BIG {
@@ -660,7 +688,6 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     };
     let mut state: (Variant, Option<f64>) = (v0, None);
     state.1 = s.run(&state.0, b0);
-    let t_first = large::elapsed_ms();
     if size > MID {
         large_extras(&mut s, state.0, b0, mc, size);
     }
@@ -671,7 +698,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     };
 
     fn consider(s: &mut Search, state: &mut (Variant, Option<f64>), v: Variant) {
-        if s.spent > WORK_BUDGET || (s.size > MID && large::soft_expired()) {
+        if s.spent > WORK_BUDGET || !s.can_start() {
             return;
         }
         let sc = s.run(&v, BACKENDS[0]);
@@ -699,7 +726,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
         tries.push(Variant { ifc: 0, ..b });
         for v in tries {
-            if (size > MID && large::soft_expired()) || rolled_big_win || (size > MID && !large::fits_half(t_first)) {
+            if !s.can_start() || rolled_big_win {
                 break;
             }
             let sc = s.run(&v, b0);
