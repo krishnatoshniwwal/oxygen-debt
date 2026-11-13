@@ -232,7 +232,7 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     phase_a(&mut f, v, light);
     prof("phase_a total", &mut t);
     if v.peel != 0 {
-        let budget = match v.peel { 1 => ic, 3 => 2 * ic, 4 => 3 * ic, 5 => 4 * ic, _ => (4 * ic).max(256) } as usize; // peel 3-5: the enclosing loop nest (sizes counted before clean-up, which roughly halves them) may be 2x, 3x, 4x the icache
+        let budget = match v.peel { 1 => ic, 3 => 2 * ic, 4 => 3 * ic, 5 => 4 * ic, 6 => 6 * ic, _ => (4 * ic).max(256) } as usize; // peel 3-5: the enclosing loop nest (sizes counted before clean-up, which roughly halves them) may be 2x, 3x, 4x the icache
         for _ in 0..4 {
             let trips = passes3::find_const_trips(&mut f, 64);
             if trips.is_empty() {
@@ -849,7 +849,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         // fix if it were already the best, so the pressure settings are tried together with it.
         let b = state.0;
         // peel 3 / 4 / 5: the nest may be 2x / 3x / 4x the icache
-        for pk in [3u8, 4, 5] {
+        for pk in [3u8, 4, 5, 6] {
             for sp in [false, true] {
                 for hot in [false, true] {
                     for sch in [true, false] {

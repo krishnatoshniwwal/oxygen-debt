@@ -685,7 +685,7 @@ successor is not in a deeper loop. Every path to a use still passes through the 
 the operands (defined in the block or above) still dominate it. Measured: one bench case
 faster (word_count|default 317 -> 311), none slower; fuzz clean.
 
-**`peel: 4` and `peel: 5`** (`driver.rs`, budget match). The nest peeling of `peel: 3` with the enclosing loop
+**`peel: 4`, `peel: 5` and `peel: 6` (2x..6x variants: 3x, 4x, 6x)** (`driver.rs`, budget match). The nest peeling of `peel: 3` with the enclosing loop
 nest allowed to reach 3x or 4x the icache (sizes are counted before clean-up, so the real code is about half).
 Tried after the walk together with `peel: 3` (same pressure settings), so it only adds candidates. Measured:
 sample cycles -2.0 %, 12 bench cases better (`transpose8`, `matvec8`, `crc_bitwise`, `row_sums`), 2 slightly worse,

@@ -78,7 +78,7 @@ each pass), `KOPT_NOPP=1` / `KOPT_NOPP2=1` (scratch peephole off), `KOPT_NOREUSE
 6. **`Variant.spillk`** (`ssa::allocate`): spill the k least-touched loop-carried values at once; tried with
    `reuse` and `sched: false`. `spill_storm|no_fused` 5,944 -> 4,764; `poly_mac|few_registers` 144 -> 80.
 
-7. **`peel: 4` / `peel: 5`** (DONE, loop iteration 1): same nest peeling as `peel: 3` but the enclosing nest may be 3x / 4x
+7. **`peel: 4` / `peel: 5` / `peel: 6`** (DONE; 6 added in loop iteration 3: 6x icache budget, sample 72,916 -> 72,514, 4 cases better (`transpose8|slow_memory` 2,052 -> 1,004, `matmul4|default`), 0 worse, fuzz clean; a bigger budget than 6x was not tried): same nest peeling as `peel: 3` but the enclosing nest may be 3x / 4x
    the icache (`driver.rs` budget match). Tried as extra candidates after the walk, next to `peel: 3`, so a case
    keeps its old result when the bigger budget is not better. Sample cycles 74,368 -> **72,916** (-2.0 %), variants
    220,706 -> 215,366; 12 cases better (`transpose8|few_registers` 2,916 -> 1,380, `matvec8`, `crc_bitwise`,
