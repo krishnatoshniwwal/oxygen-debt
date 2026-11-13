@@ -93,7 +93,7 @@ walk, from its final setting** (see the blocks guarded by `KOPT_NOPEEL3` / `KOPT
 
 ## 5. Open items, best first
 
-### 5.1 Hoist spill loads (`spill_storm` on few-register machines): experiment half done
+### 5.1 Hoist spill loads (`spill_storm` on few-register machines): experiment half done (loop iteration 5: re-applied, no gain)
 A hand-written loop for `spill_storm|few_registers` (all 12 accumulators in scratch, loop bound in memory, 3 temp
 names, each load issued two statements ahead of its use) costs **3,497 cycles at n=63 vs 4,587** from kopt now,
 and is verified equal to the original. It is a straight rewrite of the statements in `kit/bench/spill_storm.kir`.
@@ -106,6 +106,13 @@ temporaries are not enough at the prefetch distance. Ways forward: (a) make `rew
 statements when prefetching is wanted and let sched2 hoist; (b) a dedicated pass that software-pipelines spill loads
 with an explicit 3-name rotation; (c) let `name_block` rename the loop counter too.
 Value: `spill_storm` is ~8 % of all cycles, so the potential is roughly 0.5-1 % of the total.
+
+**Loop iteration 5 on 5.1 (stopped, nothing committed to src/):** `notes/experiment_prefetch_seeds.patch` no longer applies to `sched2.rs`
+(`opt_block` changed; CRLF working copies need `patch -p1 -F3 -l`). Re-applying its `prefetch_order` seeds by hand (d = 1,2,3,4,6,8) and
+measuring all 500 cases: 3 better by 4 cycles each (`matrix_add4|few_registers`, `sensor_sum`, `wide_expression`), 1 worse by 20
+(`matmul4|slow_memory`), `spill_storm` unchanged, so the seeds alone are worthless as predicted: `name_block` still has too few names.
+Next step if resumed: option (a) or (b) above, i.e. fix the register pressure first (a `reuse: 0` + spill variant that stores nothing across
+statements, or a dedicated 3-name rotation pass); the seeds only matter after that. Expected value stays 0.5-1 %.
 
 ### 5.1b Evaluated in loop iteration 4, no code change (do not repeat)
 * **Worst remaining ratios** (optimized/original, current `main`): `factorial_mod` 0.63-0.79 on every machine, `multi_exit` 0.41-0.66,
