@@ -4,10 +4,32 @@ kopt reads a KIR program + a machine file and writes a faster KIR program (Rust,
 Read this file first, then `DESIGN.md` (how kopt works, one section per pass) and `FINAL_FINAL.md`
 (the original master plan: Part 1 §1 machine laws, §4 technique verdicts, §7 build order).
 
+## 0. Next steps (2026-11-13, after the pre-submission check)
+
+**State:** the code is ready to submit. All items in section 5 are DONE or EVALUATED. Re-measured on `main` at `c0e021a` (WSL):
+sample 70,525 cycles (original 580,799), 0 failures, slowest bench program 0.87 s. Biggest remaining shares of the optimized total:
+`sieve` 6,987, `spill_storm` 4,652, `bubble_sort` 3,468, `collatz` 3,279, `bounds_trap` 2,628, `count_divisors` 2,562, `insertion_sort` 2,370.
+
+Not built yet from `FINAL_FINAL.md` Part 1 §4, ranked by ROI. Each one is a new transformation worth about 0.5 % or less of the bench
+total, so do them only if there is time before the deadline:
+
+| # | Item (FINAL_FINAL §) | Target | Expected | Effort |
+|---|---|---|---|---|
+| 1 | Judge-speed safety margin (§4.9 robustness): run `tests/measure_large.py` on a throttled CPU (`taskset` + a busy loop on the same core) and lower the `large::soft_expired` budgets if any large program goes above ~12 s | hidden ~100k programs (each worth ~200 bench programs) | avoids losing whole cases | low |
+| 2 | Loop versioning on trip count (§4.9 multiversioning): drop the `i < 64` bounds check when `n <= 64` | `bounds_trap` | ~0.5 % total (hand-measured -14 % on that program) | medium |
+| 3 | GVN-PRE / lazy code motion for pure ops (§4.2) | `partial_redundancy` and hidden programs of that kind | unknown on the bench; generic | medium-high |
+| 4 | Loop unswitching (§4.5, bounded) | loop-invariant branches in hidden programs | unknown | medium |
+| 5 | Divisibility test `x % c == 0` with a low multiply (§4.4) | constant-divisor tests in hidden programs | 0 on the bench (its divisors are variables) | low |
+| 6 | Latch duplication with rotated placement (§4.8) | `spill_storm` | ~4 % of that one program | medium |
+
+Organiser-gated: GF(2) CRC tables and idiom recognition exist but are off by default. Turn them on only if the organisers confirm
+they are allowed (`crc_bitwise` is 1,607 cycles). Before every push, run the checks in section 3; for the final commit, check again
+that `kit/` is not tracked.
+
 ## 1. Where the work is
 
 * **`main`** contains everything: `merge/scratch-peephole` (PR #9), PR #3, `midend` (sink) and `large-progs-2` are merged. Work from `main`.
-* Everything below is committed (the last loop iteration, item 7, is committed locally and not yet pushed).
+* Everything below is committed and pushed to `origin/main`.
 * `notes/experiment_prefetch_seeds.patch` is an unfinished experiment (see section 5.1), not applied.
 
 Results on the 100 bench programs x 5 machines (sample input + 3 perturbed variants each), against `main` as
@@ -30,9 +52,7 @@ the 30 s limit and are verified; `large_nest` went from "returned unchanged" to 
   (cargo 1.99). Build: `./build.sh` (= `cargo build --release --offline`), binary `target/release/kopt_bin`,
   launcher `./kopt IN.kir --machine M.cfg [--profile P.prof] -o OUT.kir`.
 * The original authors used WSL Ubuntu on Windows; same commands there.
-* The starter kit lives in `kit/` (spec, `kirlib.py` = exact timing model = ground truth, bench programs, machine files). It was **removed from version control** in the final commit (rules: the kit must not be in the submitted repo) and is git-ignored: keep a local copy in `kit/` (copy it from the organisers or from the commit before "Remove the starter kit") because the tests need it. Old note:  (spec, `kirlib.py` = exact timing model = ground truth, bench
-  programs, machine files). The submission rules say the kit must **not** be in the submitted repo: remove it
-  (`git rm -r kit`) in the final submission commit. The tests need it, so do that last.
+* The starter kit lives in `kit/` (spec, `kirlib.py` = exact timing model = ground truth, bench programs, machine files). It was **removed from version control** in the final commit (rules: the kit must not be in the submitted repo) and is git-ignored: keep a local copy in `kit/` (copy it from the organisers or from the commit before "Remove the starter kit") because the tests need it. Never commit it again.
 * macOS has no `timeout` command; use Python for timing (`tests/measure_large.py` already does).
 
 ## 3. How to check a change (always, before merging)
