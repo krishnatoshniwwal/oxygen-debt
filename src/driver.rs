@@ -676,7 +676,7 @@ const RANGE_DIV: usize = 4; // interval-analysis visits per unit of `spent` (lar
 const WORK_BUDGET: usize = 16000; // the search stops when this much work has been spent
 
 /// Return the optimized program text. Falls back to the input text on any problem.
-pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<String, String> {
+fn optimize_search(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<String, String> {
     let prog = parse_program(text)?; // an invalid input is an error
     if large::too_hostile(&prog) {
         return Ok(text.to_string());
@@ -1351,5 +1351,16 @@ fn post_latch(s: &mut Search, first: usize) {
                 s.results.push(Cand { score: sc, size, order: s.n, text: t, cp, desc });
             }
         }
+    }
+}
+
+pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<String, String> {
+    let best = optimize_search(text, mc, profile_text)?;
+    if std::env::var_os("KOPT_NOFINITE").is_some() {
+        return Ok(best);
+    }
+    match catch_unwind(AssertUnwindSafe(|| crate::finite::improve(text, &best, mc))) {
+        Ok(Some(t)) => Ok(t),
+        _ => Ok(best),
     }
 }

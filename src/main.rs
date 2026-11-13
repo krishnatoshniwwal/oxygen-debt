@@ -7,6 +7,7 @@ mod crc;
 mod idiom;
 mod driver;
 mod evalsim;
+mod finite;
 mod ir;
 mod large;
 mod kir;
