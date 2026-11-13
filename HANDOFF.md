@@ -93,6 +93,19 @@ walk, from its final setting** (see the blocks guarded by `KOPT_NOPEEL3` / `KOPT
 
 ## 5. Open items, best first
 
+**Next steps ranked by ROI (re-sorted in loop iteration 11; all cheap knob-style items are used up, what is left needs real design time).**
+Sample total now 72,514 cycles (from 74,369 at the start of the loop), 0 failures, nothing slower than the original.
+
+| # | Item | Expected gain | Effort | Risk | State |
+|---|---|---|---|---|---|
+| 1 | Make single search candidates cheaper (cache/incremental `ranges`, `phase_a`; 5.0c) | none in cycles; keeps big programs under the time limit on a slower judge machine | medium | low | not started |
+| 2 | Spill-load hoisting for `spill_storm` (5.1): fix register pressure first, then the prefetch seeds | 0.5-1 % | high | medium | half done, notes in 5.1 |
+| 3 | `sieve` / `bubble_sort` (9.4 % / 6.1 % of cycles, ratio 0.25): look for a better inner-loop form | unknown, maybe 1 % | high | medium | not started |
+| 4 | Plan items of 5.4 (latch duplication, cost-based if-conversion, multiversioning on trip count, relational range facts) | unknown | high | medium | not started |
+| 5 | Magic division / signed div by constants (`algebra.rs`) | 0 on the bench (no program needs it), unknown on the judges' hidden programs | medium | low | not started; `factorial_mod` is not helped (5.1b) |
+| - | Final step: `git rm -r kit` in the last commit, then re-run the fresh-clone check (section 7) | required | trivial | - | do last |
+Done and not worth repeating: peel 3-6 nest budgets (item 7 in section 4), determinism fix (5.0), WORK_BUDGET 10,000 (5.0b), extra unroll/ifc candidates (5.1c), `factorial_mod` magic mod (5.1b).
+
 ### 5.1 Hoist spill loads (`spill_storm` on few-register machines): experiment half done (loop iteration 5: re-applied, no gain)
 A hand-written loop for `spill_storm|few_registers` (all 12 accumulators in scratch, loop bound in memory, 3 temp
 names, each load issued two statements ahead of its use) costs **3,497 cycles at n=63 vs 4,587** from kopt now,
