@@ -120,6 +120,10 @@ Added after the walk from its final setting: 3 cases better (`rotate_array|slow_
 
 ### 5.0 Determinism of the search (DONE, loop iteration 8)
 
+### 5.0b Lower WORK_BUDGET (tried in loop iteration 9, not kept)
+
+`WORK_BUDGET` 16,000 -> 10,000: bench sample 72,514 -> 72,676 (+0.2 %; 2 better by 1 cycle, 4 worse: `spill_storm` +60..+424, `vending_fsm|wide_fast` +50), while the slow fuzz programs only went from ~2 s to 1.3-2.0 s. Kept 16,000. The real fix for those programs would be making single candidates cheaper (profile `KOPT_PROF=1` on `out/kfuzz/fail/gen/g101000773.kir`), not a smaller budget.
+
 kfuzz reported `nondeterministic` on 1,000+ instruction generated programs (the rules require the same output every run). Cause: for programs of
 normal size the search still obeyed the *wall-clock* soft limit (`large::soft_expired`, 1.73 s) in `large_extras` (hot/cold layout and reroll
 candidates, run last and often the winner) and in the main walk. A run that was merely a little slower (load) dropped those candidates, e.g.
