@@ -100,7 +100,7 @@ Sample total now 72,514 cycles (from 74,369 at the start of the loop), 0 failure
 |---|---|---|---|---|---|
 | 1 | Make single search candidates cheaper (5.0c) | none in cycles; keeps big programs under the time limit on a slower judge machine | medium | low | DONE for the shared prefix (`phase_a` cache, section 5.0d); incremental `ranges` not done (~15 %, skipped: risk) |
 | 2 | Spill-load hoisting for `spill_storm` (5.1) | achieved -0.9 % total (spill_storm few_registers -37 %) | high | medium | DONE; leftovers (latch duplication budget, icache index) are small, see 5.1 |
-| 3 | `sieve` / `bubble_sort` (9.4 % / 6.1 % of cycles, ratio 0.25): look for a better inner-loop form | unknown, maybe 1 % | high | medium | not started |
+| 3 | `sieve` / `bubble_sort` (9.4 % / 6.1 % of cycles, ratio 0.25): look for a better inner-loop form | unknown, maybe 1 % | high | medium | **IN PROGRESS** (loop 3a009676, run 4): stage 1 done (5.1d, -1.8 %); stage 2: if-convert the swap (conditional stores) so the inner loop is a plain chain, see below |
 | 4 | Plan items of 5.4 (latch duplication, cost-based if-conversion, multiversioning on trip count, relational range facts) | unknown | high | medium | not started |
 | 5 | Magic division / signed div by constants (`algebra.rs`) | 0 on the bench (no program needs it), unknown on the judges' hidden programs | medium | low | not started; `factorial_mod` is not helped (5.1b) |
 | - | Final step: `git rm -r kit` in the last commit, then re-run the fresh-clone check (section 7) | required | trivial | - | do last |
@@ -118,6 +118,15 @@ sched2 score (`kopt-s2 ...`). Numbers: sample 72,514 -> 71,845 (-0.9 % over runs
 (`backend::tail_dup` is limited by `budget = icache - size`, ~0 here); and instruction index >= `icache_size` costs +2 per execution (entry 17 stores + body + head ~ 70 > 64).
 Tried and not kept: running the best free-register variants through the other `BACKENDS` (restricted to spill variants: no gain; unrestricted: overfits, `row_sums|no_fused` 498 -> 863).
 
+### 5.1d Signed-interval refinement of `lt` in the range analysis (DONE, loop 3a009676 run 4, item 3 stage 1)
+Why: the latency rotation (`loopopt::rotate_loops`) hoists the next iteration's load to the end of the loop, which needs the new address proven trap-free. In `bubble_sort` the inner loop is
+`j = phi(0, j+1)` with exit test `j < lim`, `lim = (n-1) - i`. The unsigned interval of `lim` is useless (it can wrap), so `j` had range (0, 2^31-1) and `j+2` could not be proven in range.
+`ranges.rs`: new `Ranges::sint(x, blk, depth)` = sound signed interval (sums/differences only when the exact result stays inside signed 32 bits; unsigned intervals that lie entirely below or
+above 2^31 convert directly); `derive` uses its upper bound to cap `b` (and so `a`) on the true edge of `lt a, b` when `a` is non-negative. Now `j` is (0, 14) and rotation applies. `KOPT_NOSINT=1` turns it
+off for A/B tests; `KOPT_RANGES_DUMP=1` prints the range of every value after the mid-end (dev aid).
+Numbers (500 cases): sample 71,845 -> 70,525 (-1.8 %): 26 better, 12 worse. `bubble_sort|few_registers` 7,507 -> 4,320, `|default` 2,678 -> 2,268, `conv_mac|slow_memory` -22 %, `addsh_index`, `adler32`, `fletcher16`, `branchy_select`
+on `slow_memory` all -15..-25 %. Worse by more than 30 cycles: `fnv_hash|default` 279 -> 361 (the greedy walk now commits to `rot: 1, gu: 4` at the first back end, whose tuned score is worse than the old `rot: 0, gu: 4` with back end (12,2); tried "run
+all back ends on the best 2 runner-up variants": no gain overall and `row_sums` overfits again, so not kept), `array_sum|no_fused` +28, `fletcher16|no_fused` +56, `adler32|no_fused` +48. Fuzz: gen/mutate/machines seeds 111/222/333 x 500 clean, 28 unit tests, large programs unchanged.
 ### 5.1c Extra unroll (3,6,16) and ifc (8,12) candidates: tried in loop iteration 6, no gain (do not repeat)
 
 Added after the walk from its final setting: 3 cases better (`rotate_array|slow_memory` 368 -> 350, `insertion_sort` -13), 3 worse (`lcm_pair` +12..+20 on three machines), total change about 0. Not kept.

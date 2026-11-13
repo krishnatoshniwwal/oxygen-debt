@@ -280,6 +280,18 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool, pa: &mut HashM
         }
     }
     let mut rng = Ranges::new(&mut f, if light { 6 } else { 14 });
+    if std::env::var_os("KOPT_RANGES_DUMP").is_some() {
+        for &b in &f.blocks {
+            for p in &f.b(b).phis {
+                eprintln!("ranges: block {} phi v{} = {:?}", f.b(b).name, p.d, rng.base.get(p.d as usize).copied().flatten());
+            }
+            for ins in &f.b(b).ins {
+                if ins.has_d() {
+                    eprintln!("ranges: block {} {:?} v{} = {:?}", f.b(b).name, ins.op, ins.d, rng.base.get(ins.d as usize).copied().flatten());
+                }
+            }
+        }
+    }
     passes::dce(&mut f, Some(&rng));
     passes::cleanup_cfg(&mut f);
     // may we use the scratch region? only if the program provably never touches it

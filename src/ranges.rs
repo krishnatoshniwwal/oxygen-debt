@@ -21,6 +21,12 @@ fn bitcap(x: i64) -> i64 {
     }
 }
 
+/// KOPT_NOSINT=1 switches the signed-interval refinement of `lt` off (for A/B tests).
+fn nosint() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var_os("KOPT_NOSINT").is_some())
+}
+
 type Cons = Vec<(i64, Iv)>;
 
 fn put(c: &mut Cons, k: i64, v: Iv) {
@@ -172,6 +178,48 @@ impl Ranges {
 
     // ------------------------------------------------------------------
     /// Constraints that hold when the branch on c in block p goes the `pol` way.
+    /// Signed interval [lo, hi] of operand x in block b (depth-limited). Sound for 32-bit wrap-around:
+    /// a sum or difference only gets an interval when the exact result stays inside the signed
+    /// 32-bit range. Used where the unsigned interval is useless because the value may be negative
+    /// (for example `n - 1 - i` with `i < n`).
+    fn sint(&self, x: i64, b: usize, depth: u32) -> Option<(i64, i64)> {
+        const SMIN: i64 = -(1 << 31);
+        let sg = |u: i64| if u > SMAX { u - TWO32 } else { u };
+        if x < 0 {
+            let v = sg(!x);
+            return Some((v, v));
+        }
+        let r = self.at(x, b)?;
+        if r.1 <= SMAX {
+            return Some((r.0, r.1));
+        }
+        if r.0 > SMAX {
+            return Some((r.0 - TWO32, r.1 - TWO32));
+        }
+        if depth == 0 {
+            return None;
+        }
+        let d = self.defs.get(x as usize).copied().flatten()?;
+        let (lo, hi) = match d.op {
+            Op::Add => {
+                let (al, ah) = self.sint(d.a0, b, depth - 1)?;
+                let (bl, bh) = self.sint(d.a1, b, depth - 1)?;
+                (al + bl, ah + bh)
+            }
+            Op::Sub => {
+                let (al, ah) = self.sint(d.a0, b, depth - 1)?;
+                let (bl, bh) = self.sint(d.a1, b, depth - 1)?;
+                (al - bh, ah - bl)
+            }
+            _ => return None,
+        };
+        if lo >= SMIN && hi <= SMAX {
+            Some((lo, hi))
+        } else {
+            None
+        }
+    }
+
     fn derive(&self, p: usize, c: i64, pol: bool) -> Cons {
         let mut out: Cons = Vec::new();
         if c < 0 {
@@ -204,7 +252,13 @@ impl Ranges {
         if op == Op::Lt {
             if pol {
                 if ra.1 <= SMAX {
-                    let nbv = (rb.0.max(ra.0 + 1), rb.1.min(SMAX));
+                    let mut bhi = rb.1.min(SMAX);
+                    if let Some((_, h)) = if nosint() { None } else { self.sint(b, p, 3) } {
+                        if h >= 0 {
+                            bhi = bhi.min(h);
+                        }
+                    }
+                    let nbv = (rb.0.max(ra.0 + 1), bhi);
                     na = Some((ra.0, ra.1.min(nbv.1 - 1)));
                     nb = Some(nbv);
                 }
