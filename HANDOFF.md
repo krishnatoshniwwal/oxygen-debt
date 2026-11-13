@@ -113,7 +113,7 @@ Value: `spill_storm` is ~8 % of all cycles, so the potential is roughly 0.5-1 % 
 `transpose8` and `matvec8`: fixed by peel 4/5 (section 4, item 7).
 
 ### 5.3 Large programs (~100k instructions, each worth ~200 normal programs under Average Cycles)
-Done: all generated families finish with a large margin. `large_chain` (a long dependent chain with random
+Done: all generated families finish with a large margin. Re-checked on 2026-11-13 after the merges (sink, peel 4/5; WSL on the Windows laptop): all ten verify, worst `large_loops` 8.8 s and `large_ladder` 8.0 s (was 6.2 s max on the Mac; the cause is unknown: machine load or the extra candidates; still 3.4x under 30 s). If it grows further, look at `large::soft_expired` budgets first. `large_chain` (a long dependent chain with random
 constants, nothing reducible) is unchanged and probably at its floor. Still untested: shapes other than what
 `tests/gen_large.py` produces, and a judges' machine that is slower than this laptop (worst case here: 6.2 s of 30 s).
 
