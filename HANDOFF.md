@@ -114,6 +114,10 @@ measuring all 500 cases: 3 better by 4 cycles each (`matrix_add4|few_registers`,
 Next step if resumed: option (a) or (b) above, i.e. fix the register pressure first (a `reuse: 0` + spill variant that stores nothing across
 statements, or a dedicated 3-name rotation pass); the seeds only matter after that. Expected value stays 0.5-1 %.
 
+### 5.1c Extra unroll (3,6,16) and ifc (8,12) candidates: tried in loop iteration 6, no gain (do not repeat)
+
+Added after the walk from its final setting: 3 cases better (`rotate_array|slow_memory` 368 -> 350, `insertion_sort` -13), 3 worse (`lcm_pair` +12..+20 on three machines), total change about 0. Not kept.
+
 ### 5.1b Evaluated in loop iteration 4, no code change (do not repeat)
 * **Worst remaining ratios** (optimized/original, current `main`): `factorial_mod` 0.63-0.79 on every machine, `multi_exit` 0.41-0.66,
   `rle_encode|few_registers` 0.42, `sieve|slow_memory` 0.41. Everything else is below 0.4.
