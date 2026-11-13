@@ -442,6 +442,9 @@ struct Search<'a> {
     pa: HashMap<PaKey, Func>,
     results: Vec<Cand>,
     seen: HashMap<String, f64>,
+    seen_each: HashMap<String, Vec<f64>>, // cycles per timing input of every candidate text
+    dominate: Option<Vec<f64>>, // when set, a candidate must not be slower than this on any timing input
+    last_each: Option<Vec<f64>>, // per-input cycles of the candidate scored last
     n: usize,
     size: usize,
     light: bool,
@@ -549,12 +552,13 @@ impl<'a> Search<'a> {
         self.n += 1;
         self.spent += f.count_instrs() / 3;
         let (prog, mc, profile, rf) = (self.prog, self.mc, self.profile, self.rf);
-        let r = catch_unwind(AssertUnwindSafe(|| -> Result<(String, Option<(Compiled, usize, f64)>, f64), String> {
+        let r = catch_unwind(AssertUnwindSafe(|| -> Result<(String, Option<(Compiled, usize, f64)>, f64, Vec<f64>), String> {
             let mut t = prof_start();
             let out = finish(&mut f, mc, profile, be.0, be.1, be.2);
             prof("finish (tail copy, unroll, layout, text)", &mut t);
             if let Some(&s) = self.seen.get(&out) {
-                return Ok((out, None, s));
+                let each = self.seen_each.get(&out).cloned().unwrap_or_default();
+                return Ok((out, None, s, each));
             }
             let newprog = parse_program(&out)?;
             check_machine_features(&newprog, mc)?;
@@ -562,8 +566,8 @@ impl<'a> Search<'a> {
                 return Err("parameter count changed".into());
             }
             let cp = compile_program(&newprog);
-            let sc = match rf.score(&cp) {
-                Some(sc) => sc,
+            let (sc, each) = match rf.score_each(&cp) {
+                Some(e) => (if e.is_empty() { 0.0 } else { e.iter().sum() }, e),
                 None => {
                     // developer aid: KOPT_DUMP_BAD=FILE writes the rejected candidate there
                     if let Some(p) = std::env::var_os("KOPT_DUMP_BAD") {
@@ -573,19 +577,28 @@ impl<'a> Search<'a> {
                 }
             };
             prof("parse + score", &mut t);
-            Ok((out, Some((cp, newprog.instrs.len(), sc)), sc))
+            Ok((out, Some((cp, newprog.instrs.len(), sc)), sc, each))
         }));
         if std::env::var_os("KOPT_PROF").is_some() {
-            if let Ok(Ok((_, _, sc))) = &r {
+            if let Ok(Ok((_, _, sc, _))) = &r {
                 eprintln!("kopt-cand #{} score {:>10.0} spent {:>6} {:?} {:?}", self.n, sc, self.spent, v, be);
             }
         }
         // developer aid: KOPT_DUMP_ALL=DIR writes every candidate as DIR/cand_N.kir
-        if let (Some(d), Ok(Ok((out, _, _)))) = (std::env::var_os("KOPT_DUMP_ALL"), &r) {
+        if let (Some(d), Ok(Ok((out, _, _, _)))) = (std::env::var_os("KOPT_DUMP_ALL"), &r) {
             let _ = std::fs::write(std::path::Path::new(&d).join(format!("cand_{}.kir", self.n)), out);
         }
+        if let Ok(Ok((_, _, _, each))) = &r {
+            self.last_each = Some(each.clone());
+            if let Some(g) = &self.dominate {
+                if each.len() != g.len() || each.iter().zip(g).any(|(a, b)| *a > *b + 1e-9) {
+                    return None; // slower than the reference on some timing input: not a candidate
+                }
+            }
+        }
         match r {
-            Ok(Ok((out, Some((cp, size, sc)), _))) => {
+            Ok(Ok((out, Some((cp, size, sc)), _, each))) => {
+                self.seen_each.insert(out.clone(), each);
                 if self.size > MID {
                     large::publish(self.rf, &cp, sc, self.rf.base(), &out);
                 }
@@ -594,7 +607,7 @@ impl<'a> Search<'a> {
                 self.results.push(Cand { score: sc, size, order: self.n, text: out, cp, desc: format!("{:?} {:?}", v, be) });
                 Some(tsp.map_or(sc, |t| t.min(sc)))
             }
-            Ok(Ok((_, None, sc))) => Some(sc),
+            Ok(Ok((_, None, sc, _))) => Some(sc),
             other => {
                 let msg = match other {
                     Ok(Err(e)) => e,
@@ -689,6 +702,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         pa: HashMap::new(),
         results: Vec::new(),
         seen: HashMap::new(),
+        seen_each: HashMap::new(),
+        dominate: None,
+        last_each: None,
         n: 0,
         size,
         light: size > BIG,
@@ -924,8 +940,18 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     if size <= MID && std::env::var_os("KOPT_NOIDIOM").is_none() {
         // Bit idioms (idiom.rs): extra candidates on the walk's final setting; exact scoring decides.
         let b = state.0;
-        for m in [1u8, 2] {
-            consider2(&mut s, &mut state, Variant { idiom: m, ..b });
+        // The idiom code runs in constant time where the loop it replaces depends on the data (the
+        // Kernighan loop: one trip per set bit), so a total over a few made-up inputs can favour it
+        // while the real inputs would not. It is only accepted when it is no slower than the plain
+        // loop on every timing input.
+        s.last_each = None;
+        s.run(&b, BACKENDS[0]);
+        if let Some(g) = s.last_each.take() {
+            s.dominate = Some(g);
+            for m in [1u8, 2] {
+                consider2(&mut s, &mut state, Variant { idiom: m, ..b });
+            }
+            s.dominate = None;
         }
     }
     if size <= MID && std::env::var_os("KOPT_NOPEEL3").is_none() {

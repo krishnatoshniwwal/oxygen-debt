@@ -742,3 +742,5 @@ counted `acc += (x>>i)&1` (popcount of x&mask[i0,N)), `acc ^= ...` (parity), `ac
 and `while y!=0 {y&=y-1; cnt+=k}` (cnt0 + k*popcount(y0), y = 0). Unit tests: emitters vs `count_ones`/`reverse_bits`, loop formulas for N in 1..=32
 and i0 in 0..=33, end-to-end SSA rewrite vs interpreter. Measured (sample cycles, 5 machines): 69,066 -> 67,971; popcount 316 -> 56, bit_reverse 584 -> 60 (default);
 hamming_dist -102 on slow_memory but +17 on wide_fast (the candidate wins on kopt's own timing inputs; the constant 15-op SWAR is slower than Kernighan for sparse xors). `KOPT_NOIDIOM=1` disables.
+Fix: the idiom candidates are only accepted when they are no slower than the plain-loop candidate on every timing input (`Reference::score_each`, `Search.dominate`), not just in total;
+result: sample 69,066 -> 67,983, 11 cases better, none worse (hamming_dist|wide_fast stays 478, slow_memory 692 -> 590).

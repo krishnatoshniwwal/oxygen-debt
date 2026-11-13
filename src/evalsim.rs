@@ -107,15 +107,20 @@ impl Reference {
         if self.timing.is_empty() {
             return Some(0.0);
         }
-        let mut tot = 0.0f64;
+        self.score_each(cp).map(|v| v.iter().sum())
+    }
+
+    /// Cycles of the candidate on each timing input (same order for every candidate). None = wrong.
+    pub fn score_each(&self, cp: &Compiled) -> Option<Vec<f64>> {
+        let mut out = Vec::with_capacity(self.timing.len());
         for (inp, rf, _) in &self.timing {
             let res = execute(cp, inp, 4 * rf.steps + 1000, true);
             if res.outcome == Outcome::Timeout || differs(rf, &res) {
                 return None;
             }
-            tot += time_trace(cp, &res.trace, &self.mc) as f64;
+            out.push(time_trace(cp, &res.trace, &self.mc) as f64);
         }
-        Some(tot)
+        Some(out)
     }
 
     /// The timing inputs (clones), for passes that tune against the real execution.
