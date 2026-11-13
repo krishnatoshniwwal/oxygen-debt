@@ -734,3 +734,11 @@ The argument has four parts.
      the comparisons are computed without wrap; a literal `b` is folded with `kp` at compile time.
 Test: `split_checks_bounds_trap_exhaustive` runs `bounds_trap` for every n in 0..=300 (the program masks n with 255,
 so n = 65..=255 trap and the rest return), with and without `unroll_guarded` (u = 2, 4, 8), against the original.
+
+## idiom.rs - bit idioms from dataflow (extra candidate after the walk)
+`Variant.idiom` (1 = popcount bytes summed by multiply, 2 = by shifts) runs `idiom::run` after the first `phase_a`, before peeling.
+It replaces a loop by straight-line preheader code when every loop instruction belongs to the idiom and only header phis are live-out:
+counted `acc += (x>>i)&1` (popcount of x&mask[i0,N)), `acc ^= ...` (parity), `acc |/+/^ ((x>>i)&1)<<(c-i)` (bit reversal, rev32 then shr 31-c),
+and `while y!=0 {y&=y-1; cnt+=k}` (cnt0 + k*popcount(y0), y = 0). Unit tests: emitters vs `count_ones`/`reverse_bits`, loop formulas for N in 1..=32
+and i0 in 0..=33, end-to-end SSA rewrite vs interpreter. Measured (sample cycles, 5 machines): 69,066 -> 67,971; popcount 316 -> 56, bit_reverse 584 -> 60 (default);
+hamming_dist -102 on slow_memory but +17 on wide_fast (the candidate wins on kopt's own timing inputs; the constant 15-op SWAR is slower than Kernighan for sparse xors). `KOPT_NOIDIOM=1` disables.
