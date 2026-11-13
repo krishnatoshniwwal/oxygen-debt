@@ -734,3 +734,10 @@ The argument has four parts.
      the comparisons are computed without wrap; a literal `b` is folded with `kp` at compile time.
 Test: `split_checks_bounds_trap_exhaustive` runs `bounds_trap` for every n in 0..=300 (the program masks n with 255,
 so n = 65..=255 trap and the rest return), with and without `unroll_guarded` (u = 2, 4, 8), against the original.
+
+**Divisibility test `x % c == 0`, odd literal c >= 3** (`algebra::div_test`, `alg` bit 8). `mod x, c` whose only
+use is `eq _, 0` or a `br` becomes `p = x*inv(c); t = p + (A + 2^31); lt t, (B+1) + 2^31` (A = floor(2^31/c),
+B = A + floor((2^31-1)/c)); the branch form swaps its targets. Exact for SIGNED x with no range proof: c | x iff
+p read as signed lies in [-A, B-A] (c*p is then in int32 range and congruent to x, hence equal). Cost lat_mul + 2 ALU.
+Tests: `cargo test divtest` (8-bit analogue, all odd c and all x; 32-bit edge/random for ~1200 c), `tests/alg_divtest.py`.
+Bench: 0 changed cases (fires on no bench program); kfuzz gen/mutate/machines n=300 seed 9: no new problems.

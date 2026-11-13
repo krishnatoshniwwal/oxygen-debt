@@ -164,6 +164,13 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
                 lz = true;
             }
         }
+        if v.alg & 8 != 0 {
+            if algebra::div_test(f) {
+                chk(f, "div_test");
+                scalar(f);
+                lz = true;
+            }
+        }
         let mut rng = Ranges::new(f, 14);
         prof("  ranges", &mut t);
         let c1 = passes2::range_simplify(f, &rng, v.csub);
@@ -761,6 +768,8 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         consider(&mut s, &mut state, Variant { alg: b.alg | 2, ..b });
         let b = state.0;
         consider(&mut s, &mut state, Variant { alg: b.alg | 4, ..b });
+        let b = state.0;
+        consider(&mut s, &mut state, Variant { alg: b.alg | 8, ..b });
         if over_k(&s, &state.0) {
             early_b = Some(state.0);
             // More names than registers. Spilling to scratch is one answer; keeping the
@@ -872,6 +881,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             nb.push(Variant { alg: b.alg ^ 1, ..b });
             nb.push(Variant { alg: b.alg ^ 2, ..b });
             nb.push(Variant { alg: b.alg ^ 4, ..b });
+            nb.push(Variant { alg: b.alg ^ 8, ..b });
             nb.push(Variant { sccp: !b.sccp, ..b });
             nb.push(Variant { tree: !b.tree, ..b });
             nb.push(Variant { sink: !b.sink, ..b });
