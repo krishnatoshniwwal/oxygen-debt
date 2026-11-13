@@ -1,4 +1,4 @@
-# HANDOFF — kopt optimizer (state: 2026-11-13, branch `merge/scratch-peephole`)
+# HANDOFF — kopt optimizer (state: 2026-11-13, branch `main`; all first-round branches merged)
 
 kopt reads a KIR program + a machine file and writes a faster KIR program (Rust, std only).
 Read this file first, then `DESIGN.md` (how kopt works, one section per pass) and `FINAL_FINAL.md`
@@ -6,9 +6,8 @@ Read this file first, then `DESIGN.md` (how kopt works, one section per pass) an
 
 ## 1. Where the work is
 
-* **Branch `merge/scratch-peephole`** (pushed to `origin`) is ahead of `main` and is the branch to work from.
-  `main` was not touched. **No PR is open yet; opening one into `main` is the first thing to do.**
-* Everything below is committed and pushed; the working tree is clean.
+* **`main`** contains everything: `merge/scratch-peephole` (PR #9), PR #3, `midend` (sink) and `large-progs-2` are merged. Work from `main`.
+* Everything below is committed (the last loop iteration, item 7, is committed locally and not yet pushed).
 * `notes/experiment_prefetch_seeds.patch` is an unfinished experiment (see section 5.1), not applied.
 
 Results on the 100 bench programs x 5 machines (sample input + 3 perturbed variants each), against `main` as
@@ -79,6 +78,14 @@ each pass), `KOPT_NOPP=1` / `KOPT_NOPP2=1` (scratch peephole off), `KOPT_NOREUSE
 6. **`Variant.spillk`** (`ssa::allocate`): spill the k least-touched loop-carried values at once; tried with
    `reuse` and `sched: false`. `spill_storm|no_fused` 5,944 -> 4,764; `poly_mac|few_registers` 144 -> 80.
 
+7. **`peel: 4` / `peel: 5`** (DONE, loop iteration 1): same nest peeling as `peel: 3` but the enclosing nest may be 3x / 4x
+   the icache (`driver.rs` budget match). Tried as extra candidates after the walk, next to `peel: 3`, so a case
+   keeps its old result when the bigger budget is not better. Sample cycles 74,368 -> **72,916** (-2.0 %), variants
+   220,706 -> 215,366; 12 cases better (`transpose8|few_registers` 2,916 -> 1,380, `matvec8`, `crc_bitwise`,
+   `row_sums|no_fused`), 2 slightly worse (`spill_storm|few_registers` +120, `matrix_add4|no_fused` +84: kopt picks by
+   its own timing inputs); failures 0, nothing slower than the original, 28 unit tests pass, kfuzz gen/mutate
+   300 each clean. Why: the size estimate is taken before clean-up, so 8x8 nests (transpose8, matvec8) were just over
+   the 2x budget although folding makes them much smaller.
 **Lesson about the search (`src/driver.rs`):** it is a greedy walk over `Variant` settings with a work budget. Adding
 a new setting to the walk's neighbour list changed its path and made other programs worse (`row_sums`). New settings
 that only pay off in combination (peel 3 + spill, reuse, spillk) are therefore tried as **extra candidates after the
@@ -103,7 +110,7 @@ Value: `spill_storm` is ~8 % of all cycles, so the potential is roughly 0.5-1 % 
 ### 5.2 Other cycle sinks (sum over machines and inputs, before this session's work)
 `sieve` ~8.8 %, `bubble_sort` 6.5 %, `matmul4` 4.2 % (now less), `count_divisors` 3.6 %, `transpose8` 3.6 %,
 `bounds_trap` 3.2 %, `crc_bitwise` 2.7 %, `strength_ladder` 2.5 %, `vending_fsm` 2.5 %, `conv_mac` 2.4 %.
-`transpose8` and `matvec8` are not helped by peel 3 (trip count 8; check the size estimate in `passes3.rs`).
+`transpose8` and `matvec8`: fixed by peel 4/5 (section 4, item 7).
 
 ### 5.3 Large programs (~100k instructions, each worth ~200 normal programs under Average Cycles)
 Done: all generated families finish with a large margin. `large_chain` (a long dependent chain with random

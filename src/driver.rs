@@ -232,14 +232,14 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     phase_a(&mut f, v, light);
     prof("phase_a total", &mut t);
     if v.peel != 0 {
-        let budget = if v.peel == 1 { ic } else if v.peel == 3 { 2 * ic } else { (4 * ic).max(256) } as usize; // peel 3: sizes are counted before clean-up, which roughly halves them
+        let budget = match v.peel { 1 => ic, 3 => 2 * ic, 4 => 3 * ic, 5 => 4 * ic, _ => (4 * ic).max(256) } as usize; // peel 3-5: the enclosing loop nest (sizes counted before clean-up, which roughly halves them) may be 2x, 3x, 4x the icache
         for _ in 0..4 {
             let trips = passes3::find_const_trips(&mut f, 64);
             if trips.is_empty() {
                 break;
             }
             ssa::destruct_ssa(&mut f);
-            let ch = passes3::peel_const_loops(&mut f, &trips, budget, 16, v.peel == 3);
+            let ch = passes3::peel_const_loops(&mut f, &trips, budget, 16, v.peel >= 3);
             ssa::build_ssa(&mut f);
             phase_a(&mut f, v, false);
             if !ch {
@@ -848,18 +848,21 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         // candidate often needs more names than registers, which the walk's neighbours would only
         // fix if it were already the best, so the pressure settings are tried together with it.
         let b = state.0;
-        for sp in [false, true] {
-            for hot in [false, true] {
-                for sch in [true, false] {
-                    let v = Variant { peel: 3, spill: sp, hot, sched: sch, ..b };
-                    if v != b {
-                        consider2(&mut s, &mut state, v);
+        // peel 3 / 4 / 5: the nest may be 2x / 3x / 4x the icache
+        for pk in [3u8, 4, 5] {
+            for sp in [false, true] {
+                for hot in [false, true] {
+                    for sch in [true, false] {
+                        let v = Variant { peel: pk, spill: sp, hot, sched: sch, ..b };
+                        if v != b {
+                            consider2(&mut s, &mut state, v);
+                        }
                     }
                 }
             }
         }
         let cur = state.0;
-        if cur.peel == 3 {
+        if cur.peel >= 3 {
             for r in [2u8, 3] {
                 consider2(&mut s, &mut state, Variant { spill: true, reuse: r, ..cur });
             }
