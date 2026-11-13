@@ -1,9 +1,0 @@
-# branch profile for collatz: edge FROM TO COUNT (CFG edges taken in a typical run)
-edge entry while_head1 1
-edge while_head1 while_body2 18
-edge while_body2 then4 4
-edge then4 endif5 4
-edge endif5 while_head1 18
-edge while_body2 else6 14
-edge else6 endif5 14
-edge while_head1 while_exit3 1

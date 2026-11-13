@@ -1,5 +1,0 @@
-# branch profile for sum_sq: edge FROM TO COUNT (CFG edges taken in a typical run)
-edge entry for_head1 1
-edge for_head1 for_body2 40
-edge for_body2 for_head1 40
-edge for_head1 for_exit3 1

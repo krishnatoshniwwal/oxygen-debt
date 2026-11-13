@@ -1,4 +1,0 @@
-; hand-written optimized version of bench/const_chain.kir
-func const_chain(v0)
-entry:
-  ret v0               ; ((x + 5) - 5) * 1 + 0 ... everything cancels, so the function just returns x

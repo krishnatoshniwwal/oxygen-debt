@@ -1,3 +1,0 @@
-# branch profile for partial_redundancy: edge FROM TO COUNT (CFG edges taken in a typical run)
-edge entry else3 1
-edge else3 endif2 1

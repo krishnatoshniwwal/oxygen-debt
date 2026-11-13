@@ -1,5 +1,0 @@
-# branch profile for irreducible_loop: edge FROM TO COUNT (CFG edges taken in a typical run)
-edge entry a 1
-edge a b 10
-edge b a 9
-edge b done 1

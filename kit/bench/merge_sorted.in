@@ -1,4 +1,0 @@
-# sample input for merge_sorted
-args 
-mem 0 1 4 6 9 12 15 20 31
-mem 16 2 3 7 8 13 14 25 40

@@ -30,7 +30,7 @@ the 30 s limit and are verified; `large_nest` went from "returned unchanged" to 
   (cargo 1.99). Build: `./build.sh` (= `cargo build --release --offline`), binary `target/release/kopt_bin`,
   launcher `./kopt IN.kir --machine M.cfg [--profile P.prof] -o OUT.kir`.
 * The original authors used WSL Ubuntu on Windows; same commands there.
-* The starter kit is in `kit/` and **is tracked** (spec, `kirlib.py` = exact timing model = ground truth, bench
+* The starter kit lives in `kit/` (spec, `kirlib.py` = exact timing model = ground truth, bench programs, machine files). It was **removed from version control** in the final commit (rules: the kit must not be in the submitted repo) and is git-ignored: keep a local copy in `kit/` (copy it from the organisers or from the commit before "Remove the starter kit") because the tests need it. Old note:  (spec, `kirlib.py` = exact timing model = ground truth, bench
   programs, machine files). The submission rules say the kit must **not** be in the submitted repo: remove it
   (`git rm -r kit`) in the final submission commit. The tests need it, so do that last.
 * macOS has no `timeout` command; use Python for timing (`tests/measure_large.py` already does).
@@ -103,7 +103,7 @@ Sample total now 72,514 cycles (from 74,369 at the start of the loop), 0 failure
 | 3 | `sieve` / `bubble_sort` | achieved -1.8 % total (5.1d: signed-interval refinement enables rotation); sieve and if-conversion of the swap evaluated, no gain (5.1e) | high | medium | DONE |
 | 4 | Plan items of 5.4 (latch duplication, cost-based if-conversion, multiversioning on trip count, relational range facts (first step done in 5.1d: signed intervals for `lt`)) | unknown | high | medium | EVALUATED (5.1f): each < 0.5 % total, deferred |
 | 5 | Magic division / signed div by constants (`algebra.rs`) | 0 on the bench (no program needs it), unknown on the judges' hidden programs | medium | low | EVALUATED (5.1g): at the ISA limit, nothing to build |
-| - | Final step: `git rm -r kit` in the last commit, then re-run the fresh-clone check (section 7) | required | trivial | - | do last |
+| - | Final step: remove `kit/` from version control, re-run the fresh-clone check | required | trivial | - | DONE (loop run 6, 2026-11-13) |
 Done and not worth repeating: peel 3-6 nest budgets (item 7 in section 4), determinism fix (5.0), WORK_BUDGET 10,000 (5.0b), extra unroll/ifc candidates (5.1c), `factorial_mod` magic mod (5.1b).
 
 ### 5.1 Hoist spill loads (`spill_storm` on few-register machines): stage 1 DONE (loop 3a009676 run 2), stage 2 open

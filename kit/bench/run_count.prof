@@ -1,9 +1,0 @@
-# branch profile for run_count: edge FROM TO COUNT (CFG edges taken in a typical run)
-edge entry endif2 1
-edge endif2 for_head3 1
-edge for_head3 for_body4 2
-edge for_body4 endif7 1
-edge endif7 for_head3 2
-edge for_body4 then6 1
-edge then6 endif7 1
-edge for_head3 for_exit5 1
