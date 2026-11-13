@@ -102,7 +102,7 @@ Sample total now 72,514 cycles (from 74,369 at the start of the loop), 0 failure
 | 2 | Spill-load hoisting for `spill_storm` (5.1) | achieved -0.9 % total (spill_storm few_registers -37 %) | high | medium | DONE; leftovers (latch duplication budget, icache index) are small, see 5.1 |
 | 3 | `sieve` / `bubble_sort` | achieved -1.8 % total (5.1d: signed-interval refinement enables rotation); sieve and if-conversion of the swap evaluated, no gain (5.1e) | high | medium | DONE |
 | 4 | Plan items of 5.4 (latch duplication, cost-based if-conversion, multiversioning on trip count, relational range facts (first step done in 5.1d: signed intervals for `lt`)) | unknown | high | medium | EVALUATED (5.1f): each < 0.5 % total, deferred |
-| 5 | Magic division / signed div by constants (`algebra.rs`) | 0 on the bench (no program needs it), unknown on the judges' hidden programs | medium | low | not started; `factorial_mod` is not helped (5.1b) |
+| 5 | Magic division / signed div by constants (`algebra.rs`) | 0 on the bench (no program needs it), unknown on the judges' hidden programs | medium | low | EVALUATED (5.1g): at the ISA limit, nothing to build |
 | - | Final step: `git rm -r kit` in the last commit, then re-run the fresh-clone check (section 7) | required | trivial | - | do last |
 Done and not worth repeating: peel 3-6 nest budgets (item 7 in section 4), determinism fix (5.0), WORK_BUDGET 10,000 (5.0b), extra unroll/ifc candidates (5.1c), `factorial_mod` magic mod (5.1b).
 
@@ -138,6 +138,12 @@ Method: `KOPT_ROT_DEBUG=1 KOPT_FORCE_ROT=1` on all 100 bench programs counted ho
 * **Multiversioning / bounds-check removal** (`bounds_trap`, 3.7 % of cycles): a loop `for i < n { if !(i < 64) trap; ... }` is check-free when n <= 64. Hand-measured at n = 60: 391 -> 335 cycles (-14 %) on that one program, only for inputs with n <= 64; ~0.5 % of the total at best, for a loop-versioning pass. Not built.
 * **Latch duplication / cost-based if-conversion:** see 5.1 (leftover ~4 % of one program) and 5.1e (swap if-conversion only helps `wide_fast`). Not built.
 Conclusion: the remaining plan items are each < 0.5 % of the 500-case total and each needs a new SSA transformation; deferred, not blocked.
+### 5.1g Item 5 (magic division / division by constants) evaluated in loop run 6, nothing left to build (do not repeat)
+Test programs (12 variants of `div`/`mod` by a literal on signed/unsigned/ranged operands, in `kw/dv/` of the session, not kept) and a scan of all bench programs for `div`/`mod` that survive optimisation:
+* `div_const`/`find_magic` cover every case a single 32-bit `mul` + `shr` can do exactly. It is provably limited: the product `x*m` must stay below 2^32, e.g. `x / 7` has no exact pair for `x < 2^16` (needs 35 bits), `x / 1000` none for `x < 2^28`. KIR has no `mulhi` and no arithmetic shift, so signed unknown `x / 2^k` needs 5-6 ALU ops (similar latency, more ops) and `x / c` for wide `x` needs a second multiply (best exact two-step form I found, `x = 4096a + b`, `q = 409a + ((6a+b)*26215 >> 18)`, is ~10 cycles vs 12 for `div`).
+* Modular accumulation with a small quotient (`adler32` `% 65521`, `fletcher16` `% 255`, `s = (s + x) % M` chains): already handled by the existing `csub` (compare + subtract) and the lazy-`mod` hoist (one `mod` after the loop); a hand-written chained version of two dependent `mod 255` in a loop that stores each result also ends with 0 `mod`s and a 4x speed-up with no new code.
+* Tried: making `Ranges::xfer` for `select` condition-aware (`select(x < K, x, x - K)` gets `x - K` bounded by `x >= K`, with `arm_iv`): ranges for the second `mod` of `fletcher16` became exact (`(0,508)`), but 0 of 500 cases changed and the hand-written chain was already optimal without it. Reverted.
+* Remaining `div`/`mod` in the bench: `digit_sum` (`/10`, `%10` of a 24-bit value; the exact forms are not faster), `count_divisors`/`gcd`/`lcm_pair`/`is_prime` (variable divisors), `powmod`/`pow_fast`/`factorial_mod` (`%` of a 25-32 bit product). All are at the ISA's limit.
 ### 5.1c Extra unroll (3,6,16) and ifc (8,12) candidates: tried in loop iteration 6, no gain (do not repeat)
 
 Added after the walk from its final setting: 3 cases better (`rotate_array|slow_memory` 368 -> 350, `insertion_sort` -13), 3 worse (`lcm_pair` +12..+20 on three machines), total change about 0. Not kept.
