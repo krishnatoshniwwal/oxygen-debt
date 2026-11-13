@@ -947,7 +947,9 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             }
         }
     }
+    let t_ps2 = prof_start();
     post_sched2(&mut s);
+    { let mut t = t_ps2; prof("post_sched2", &mut t); }
     if size <= MID {
         large_extras(&mut s, state.0, b0, mc, size);
     }

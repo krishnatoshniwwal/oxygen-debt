@@ -120,6 +120,10 @@ Added after the walk from its final setting: 3 cases better (`rotate_array|slow_
 
 ### 5.0 Determinism of the search (DONE, loop iteration 8)
 
+### 5.0c Profile of a slow 1,162-instruction program (done, loop iteration 10: no cheap saving)
+
+`KOPT_PROF=1` on `out/kfuzz/fail/gen/g101000773.kir` (1.85 s search, 19 candidates): `phase_a` 0.45 s (11 runs), `ranges` 0.33 s (43 calls, ~8 ms each), `post_sched2` 0.36 s (new profile label), peeling 0.11 s, ifconv 0.08 s, mem_pass 0.05 s; the rest is spread thinly (allocate, scheduling, scoring). No single hot spot: the best lever would be caching or incremental `ranges` (up to ~15 % of the time). Not done: the saving is too small for the risk.
+
 ### 5.0b Lower WORK_BUDGET (tried in loop iteration 9, not kept)
 
 `WORK_BUDGET` 16,000 -> 10,000: bench sample 72,514 -> 72,676 (+0.2 %; 2 better by 1 cycle, 4 worse: `spill_storm` +60..+424, `vending_fsm|wide_fast` +50), while the slow fuzz programs only went from ~2 s to 1.3-2.0 s. Kept 16,000. The real fix for those programs would be making single candidates cheaper (profile `KOPT_PROF=1` on `out/kfuzz/fail/gen/g101000773.kir`), not a smaller budget.
