@@ -18,6 +18,7 @@ mod ranges;
 mod sched2;
 mod reassoc;
 mod sccp;
+mod sink;
 mod reroll;
 mod ssa;
 mod validate;

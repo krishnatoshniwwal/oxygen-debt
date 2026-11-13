@@ -677,3 +677,10 @@ the rolling pattern "load old x_i+1, update x_i, store" that the scheduler would
 prefetches the loads two statements ahead with three temporaries reaches 3497 cycles at n=63 on
 `few_registers` against 4587 now: the remaining gap needs a pass that hoists spill loads by a fixed distance.
 
+
+**Sinking** (`sink::sink`, setting `sink`, before lowering). A pure instruction in a block ending
+in a two-way branch moves to the start of a successor that has the block as its only
+predecessor when every use is in a block that successor dominates, no use is a phi, and the
+successor is not in a deeper loop. Every path to a use still passes through the new place and
+the operands (defined in the block or above) still dominate it. Measured: one bench case
+faster (word_count|default 317 -> 311), none slower; fuzz clean.
