@@ -13,6 +13,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// `take_work`). The search budget for large programs counts it, so that it follows the real cost.
 static WORK: AtomicU64 = AtomicU64::new(0);
 
+pub fn add_work(n: u64) {
+    WORK.fetch_add(n, Ordering::Relaxed);
+}
+
 pub fn take_work() -> u64 {
     WORK.swap(0, Ordering::Relaxed)
 }

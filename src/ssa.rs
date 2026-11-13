@@ -2,7 +2,38 @@
 use crate::ir::*;
 use crate::kir::*;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use std::collections::BinaryHeap;
+
+/// Fast deterministic hasher (Fx-style) for the integer-keyed sets and maps of liveness and the
+/// interference graph; the std SipHash dominated the cost of `allocate` on large functions.
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+impl std::hash::Hasher for FxHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(i as u64);
+    }
+    fn write_i64(&mut self, i: i64) {
+        self.write_u64(i as u64);
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+pub type FxBuild = std::hash::BuildHasherDefault<FxHasher>;
+type HashSet<T> = std::collections::HashSet<T, FxBuild>;
+type HashMap<K, V> = std::collections::HashMap<K, V, FxBuild>;
 
 // ---------------------------------------------------------------------------
 // SSA construction (pruned, Cytron et al.), with copy and constant propagation
@@ -21,13 +52,13 @@ pub fn build_ssa(f: &mut Func) {
     let nb = f.arena.len();
 
     // ---- liveness of the original registers (per block) ----
-    let mut defs: Vec<HashSet<i64>> = vec![HashSet::new(); nb];
-    let mut livein: Vec<HashSet<i64>> = vec![HashSet::new(); nb];
-    let mut liveout: Vec<HashSet<i64>> = vec![HashSet::new(); nb];
+    let mut defs: Vec<HashSet<i64>> = vec![HashSet::default(); nb];
+    let mut livein: Vec<HashSet<i64>> = vec![HashSet::default(); nb];
+    let mut liveout: Vec<HashSet<i64>> = vec![HashSet::default(); nb];
     let mut defblocks: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
     for &b in &rpo {
-        let mut u: HashSet<i64> = HashSet::new();
-        let mut d: HashSet<i64> = HashSet::new();
+        let mut u: HashSet<i64> = HashSet::default();
+        let mut d: HashSet<i64> = HashSet::default();
         let mut dorder: Vec<i64> = Vec::new();
         for ins in &f.arena[b].ins {
             for &x in &ins.a {
@@ -102,7 +133,7 @@ pub fn build_ssa(f: &mut Func) {
 
     // ---- phi placement ----
     for (&v, dbs) in &defblocks {
-        let mut has: HashSet<usize> = HashSet::new();
+        let mut has: HashSet<usize> = HashSet::default();
         let mut inw: HashSet<usize> = dbs.iter().copied().collect();
         let mut work: Vec<usize> = dbs.clone();
         while let Some(x) = work.pop() {
@@ -136,7 +167,7 @@ pub fn build_ssa(f: &mut Func) {
     f.params = newparams;
     // position of a predecessor in a block with many predecessors (a linear search per edge
     // would be quadratic for a join with tens of thousands of incoming edges)
-    let mut pred_pos: HashMap<usize, HashMap<usize, usize>> = HashMap::new();
+    let mut pred_pos: HashMap<usize, HashMap<usize, usize>> = HashMap::default();
     let mut stack: Vec<(usize, Option<Vec<i64>>)> = vec![(entry, None)];
     while let Some((b, pushed)) = stack.pop() {
         if let Some(pv) = pushed {
@@ -254,12 +285,12 @@ pub fn destruct_ssa(f: &mut Func) {
 /// Per-block live-in / live-out sets for a non-SSA function (indexed by block id).
 fn liveness(f: &Func) -> (Vec<HashSet<i64>>, Vec<HashSet<i64>>) {
     let nb = f.arena.len();
-    let mut dfn: Vec<HashSet<i64>> = vec![HashSet::new(); nb];
-    let mut livein: Vec<HashSet<i64>> = vec![HashSet::new(); nb];
-    let mut liveout: Vec<HashSet<i64>> = vec![HashSet::new(); nb];
+    let mut dfn: Vec<HashSet<i64>> = vec![HashSet::default(); nb];
+    let mut livein: Vec<HashSet<i64>> = vec![HashSet::default(); nb];
+    let mut liveout: Vec<HashSet<i64>> = vec![HashSet::default(); nb];
     for &b in &f.blocks {
-        let mut u: HashSet<i64> = HashSet::new();
-        let mut d: HashSet<i64> = HashSet::new();
+        let mut u: HashSet<i64> = HashSet::default();
+        let mut d: HashSet<i64> = HashSet::default();
         for ins in &f.arena[b].ins {
             for &x in &ins.a {
                 if x >= 0 && !d.contains(&x) {
@@ -273,6 +304,7 @@ fn liveness(f: &Func) -> (Vec<HashSet<i64>>, Vec<HashSet<i64>>) {
         livein[b] = u;
         dfn[b] = d;
     }
+    let mut lwork: u64 = 0;
     let mut work: Vec<usize> = f.blocks.clone();
     let mut inwork = vec![false; nb];
     let mut first = vec![false; nb];
@@ -283,6 +315,7 @@ fn liveness(f: &Func) -> (Vec<HashSet<i64>>, Vec<HashSet<i64>>) {
     while let Some(b) = work.pop() {
         inwork[b] = false;
         let n0 = liveout[b].len();
+        lwork += 4 + livein[b].len() as u64 + liveout[b].len() as u64;
         let mut add: Vec<i64> = Vec::new();
         for &s in f.arena[b].succs() {
             add.extend(livein[s].iter().copied());
@@ -307,6 +340,7 @@ fn liveness(f: &Func) -> (Vec<HashSet<i64>>, Vec<HashSet<i64>>) {
             }
         }
     }
+    crate::ranges::add_work(lwork / 8);
     (liveout, livein)
 }
 
@@ -341,7 +375,7 @@ fn build_graph(f: &mut Func) -> Result<Graph, String> {
     compute_preds(f);
     let (liveout, _) = liveness(f);
     let n = f.nval.max(0) as usize + 1;
-    let mut g = Graph { nodes: Vec::new(), adj: vec![HashSet::new(); n], present: vec![false; n], parent: vec![-1; n], cost: vec![0.0; n] };
+    let mut g = Graph { nodes: Vec::new(), adj: vec![HashSet::default(); n], present: vec![false; n], parent: vec![-1; n], cost: vec![0.0; n] };
     fn node(g: &mut Graph, v: i64) {
         if !g.present[v as usize] {
             g.present[v as usize] = true;
@@ -397,12 +431,15 @@ fn build_graph(f: &mut Func) -> Result<Graph, String> {
             return Err(format!("interference graph too large ({})", est));
         }
     }
+    let mut gwork: u64 = 0;
     for &b in &f.blocks {
         let mut live: HashSet<i64> = liveout[b].clone();
+        gwork += liveout[b].len() as u64;
         let w = f.arena[b].freq;
         for ins in f.arena[b].ins.iter().rev() {
             if ins.has_d() {
                 let d = ins.d;
+                gwork += 2 * live.len() as u64 + 2;
                 let skip = if ins.op == Op::Mov && ins.a[0] >= 0 {
                     copies.push((w, d, ins.a[0]));
                     ins.a[0]
@@ -435,6 +472,7 @@ fn build_graph(f: &mut Func) -> Result<Graph, String> {
         }
     }
 
+    crate::ranges::add_work(gwork / 8);
     // ---- coalescing (aggressive, hottest copies first) ----
     let mut order: Vec<usize> = (0..copies.len()).collect();
     order.sort_by(|&i, &j| copies[j].0.partial_cmp(&copies[i].0).unwrap().then(i.cmp(&j)));
@@ -651,7 +689,7 @@ fn rewrite_spills(f: &mut Func, g: &mut Graph, slot_of: &HashMap<i64, usize>, no
                 out.push(Instr::no_d(Op::Store, vec![lit(dslot.unwrap() as i64), ins.a[0]], vec![]));
                 continue;
             }
-            let mut loaded: HashMap<usize, i64> = HashMap::new();
+            let mut loaded: HashMap<usize, i64> = HashMap::default();
             for i in 0..ins.a.len() {
                 let x = ins.a[i];
                 if x >= 0 {
@@ -733,7 +771,7 @@ pub const SCRATCH_WORDS: usize = 1024;
 /// of the hottest blocks' live-in values (least-touched first) in scratch memory. Which one
 /// pays is measured by the search. Returns the number of names.
 pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: usize, reuse: usize, spillk: usize) -> Result<i64, String> {
-    let mut nospill: HashSet<i64> = HashSet::new();
+    let mut nospill: HashSet<i64> = HashSet::default();
     let mut nslots = 0usize;
     if (force > 0 || spillk > 0) && k.is_some() {
         let mut gg = build_graph(f)?;
@@ -754,7 +792,7 @@ pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: u
             cl.sort_by(|&a, &b| gg.cost[a as usize].partial_cmp(&gg.cost[b as usize]).unwrap().then(a.cmp(&b)));
             let picks: Vec<i64> = if spillk > 0 { cl.iter().take(spillk).copied().collect() } else { cl.get(force - 1).copied().into_iter().collect() };
             if !picks.is_empty() {
-                let mut slot_of: HashMap<i64, usize> = HashMap::new();
+                let mut slot_of: HashMap<i64, usize> = HashMap::default();
                 for v in picks {
                     slot_of.insert(v, SCRATCH_BASE + nslots);
                     nslots += 1;
@@ -782,7 +820,7 @@ pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: u
             ncol = nc;
             break;
         }
-        let mut slot_of: HashMap<i64, usize> = HashMap::new();
+        let mut slot_of: HashMap<i64, usize> = HashMap::default();
         for v in spills {
             slot_of.insert(v, SCRATCH_BASE + nslots);
             nslots += 1;
@@ -832,8 +870,8 @@ pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: u
 /// Debug helper: every value has one definition that dominates its uses.
 pub fn check_ssa(f: &mut Func) -> Result<(), String> {
     analyze(f);
-    let mut defblk: HashMap<i64, usize> = HashMap::new();
-    let mut pos: HashMap<i64, i64> = HashMap::new();
+    let mut defblk: HashMap<i64, usize> = HashMap::default();
+    let mut pos: HashMap<i64, i64> = HashMap::default();
     let entry = f.blocks[0];
     for &p in &f.params {
         defblk.insert(p, entry);
