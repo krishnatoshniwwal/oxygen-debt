@@ -1,107 +1,134 @@
-# HANDOFF — kopt optimizer, state on 2026-11-13 (updated at the end; see "Update" below)
+# HANDOFF — kopt optimizer (state: 2026-11-13, branch `merge/scratch-peephole`)
 
-Read this first, then `DESIGN.md` (how kopt works) and `FINAL_FINAL.md` (the full plan:
-Part 1 §1 machine laws, §4 technique verdicts, §7 build order, §11 experiments).
+kopt reads a KIR program + a machine file and writes a faster KIR program (Rust, std only).
+Read this file first, then `DESIGN.md` (how kopt works, one section per pass) and `FINAL_FINAL.md`
+(the original master plan: Part 1 §1 machine laws, §4 technique verdicts, §7 build order).
 
-## Setup facts
+## 1. Where the work is
 
-- Rust, std only. **cargo exists only in WSL Ubuntu**:
-  `wsl -e bash -c '. ~/.cargo/env; cd /mnt/c/Users/Krishna/Desktop/oxygen-debt && cargo build --release --offline'`.
-  From Git Bash prefix `MSYS_NO_PATHCONV=1`; use `~/kw` in WSL for scratch (WSL `/tmp` is wiped).
-- The starter kit is in `kit/` and is tracked in this repo (so a fresh clone has it): `KIR_SPEC.md`,
-  `kirlib.py` (the exact timing model = ground truth), `bench/*.kir` + `.in`, `machines/*.cfg`.
-  The rules say the kit must not be in the *submitted* repo: remove it before submitting.
-- **Regression check** (always before merging into main):
-  `python3 tests/measure.py <kopt_bin> out.json` then `python3 tests/compare_runs.py base.json out.json`
-  (100 bench programs × 5 machines, sample inputs + 3 variants each). Required: `fails=0`, nothing
-  slower than the original.
-- **Fuzzing**: `cargo build --release --offline --features tools --bin kfuzz`, then
-  `kfuzz gen|mutate|machines --n 200 --seed S --kopt <bin> --kit kit` (random programs, judge-style
-  mutations, random machines). Unit tests: `cargo test --release --offline` (28 pass).
-- New passes are added as optional `Variant` settings in `src/driver.rs`; the driver measures every
-  candidate with the exact model and keeps one only if strictly faster than the input and equal on
-  the self-check inputs. Note the names: `Variant.tree` = tree-height reduction, `Variant.thr` = DFA
-  threading.
+* **Branch `merge/scratch-peephole`** (pushed to `origin`) is ahead of `main` and is the branch to work from.
+  `main` was not touched. **No PR is open yet; opening one into `main` is the first thing to do.**
+* Everything below is committed and pushed; the working tree is clean.
+* `notes/experiment_prefetch_seeds.patch` is an unfinished experiment (see section 5.1), not applied.
 
-## Where main stands (pushed, `origin/main`)
+Results on the 100 bench programs x 5 machines (sample input + 3 perturbed variants each), against `main` as
+it was at the start of this session:
 
-All 7 first-round session branches are merged (PR #8), plus two passes and two bug fixes:
+| | main before | this branch |
+|---|---|---|
+| sample cycles | 76,875 | **74,369** (-3.3 %) |
+| variant cycles | 228,710 | 220,711 (-3.5 %) |
+| failures | 0 | 0 |
+| cases slower than the original | 0 | 0 |
 
-| Commit | What |
-|---|---|
-| PR #8 | loops-arrays, regs-sched, algebra, midend, layout-control, large-progs, verify-infra merged |
-| `d097f03` | `iv_rewrite` accepts loop-invariant steps (sieve) |
-| `b8428df` | `src/memfwd.rs`: memory forwarding through joins and across iterations (bubble_sort) |
-| `a068883` | verify-infra's 2 correctness fixes (speculation, lazy mod) |
+Of the 500 cases, 48 are better and 1 is slightly worse (`spill_storm|default` 3,656 -> 3,784). The unoptimized
+sample total is 580,799. Large (~100k instruction) programs: all ten generated ones finish in at most 6.2 s of
+the 30 s limit and are verified; `large_nest` went from "returned unchanged" to 100,003 -> 71 instructions.
 
-Bench, old main → now: sample cycles **88,988 → ~76,900 (−13.6%)**, 0 failures, no case slower than
-its original. ~14,000 fuzzed programs gave no wrong output.
+## 2. Setup
 
-PRs #1–#7 are obsolete (all contained in #8); close them.
+* Rust toolchain needed (std only, no crates, builds offline). On the Mac used here: `brew install rust`
+  (cargo 1.99). Build: `./build.sh` (= `cargo build --release --offline`), binary `target/release/kopt_bin`,
+  launcher `./kopt IN.kir --machine M.cfg [--profile P.prof] -o OUT.kir`.
+* The original authors used WSL Ubuntu on Windows; same commands there.
+* The starter kit is in `kit/` and **is tracked** (spec, `kirlib.py` = exact timing model = ground truth, bench
+  programs, machine files). The submission rules say the kit must **not** be in the submitted repo: remove it
+  (`git rm -r kit`) in the final submission commit. The tests need it, so do that last.
+* macOS has no `timeout` command; use Python for timing (`tests/measure_large.py` already does).
 
-## Unmerged work on pushed branches (all WIP checkpoints, verify before merging)
+## 3. How to check a change (always, before merging)
 
-Merge each into main only after: it builds, `cargo test` passes, `measure.py` shows 0 failures and
-no total regression, and kfuzz finds no mismatch. All are based on the merged main, so conflicts
-should be small (`src/driver.rs`, `DESIGN.md`).
+```
+cargo build --release --offline && cargo test --release --offline        # 28 unit tests
+python3 tests/measure.py target/release/kopt_bin new.json                 # ~30 s; needs kit/
+python3 tests/compare_runs.py base.json new.json                          # need fails=0, nothing slower than original
+cargo build --release --offline --features tools --bin kfuzz
+./target/release/kfuzz gen|mutate|machines --n 400 --seed S --kopt target/release/kopt_bin --kit kit
+python3 tests/gen_large.py OUTDIR && python3 tests/measure_large.py target/release/kopt_bin OUTDIR --c 64 --q 2
+```
 
-| Branch | Ahead of main | What it has | Session's own result |
-|---|---|---|---|
-| `claude/regs-sched-66b143` | 3 | **scratch peephole** (spill load/store cleanup), second naming mode | peephole: 29 cases better, 0 worse, 0 failures. **Merge first.** |
-| `claude/algebra-b60799` | 2 | `algebra::iv_divmod` (i/c, i%c as wrap counters, `alg` bit 4); partial magic division / divisibility test | iv_divmod checked; items 3–4 partial |
-| `claude/layout-control-3092e9` | 2 | node splitting for two-entrance (irreducible) loops | measured at P=0/4/8; check numbers before merging |
-| `claude/midend-8682d5` | 3 | code sinking pass | correct, nearly no gain (1 case better) |
-| `claude/large-progs-2-4b8b5d` | 1 | just started (timing / budgets for 100k programs) | nothing measured |
+Keep a `base.json` from `main` to compare against. Reading kfuzz output:
 
-## Remaining cycle sinks (merged main, sum over 5 machines × 4 inputs)
+* `mismatch` / `VALIDATOR-UNSOUND` = a real bug. None seen.
+* `regress` = optimized program slower than the original on kfuzz's *own* random inputs. Not serious (kopt picks by
+  its own timing inputs); 1-5 per 400 is normal on every commit tested.
+* `caught-timing` = a candidate was rejected by kopt's step cap (4x the original's instructions + 1000). It is a
+  *slow* spill-heavy candidate, **not** a miscompile (verified on 540 inputs for seed 63, case `g63000338`).
+* `nondeterministic` appears rarely and does not reproduce: the search has wall-clock limits
+  (`large::soft_expired`), so a loaded machine can stop it at a different point. Same on the old baseline.
 
-sieve 8.8%, spill_storm 8.4%, bubble_sort 6.5%, matmul4 4.2%, count_divisors 3.6%, transpose8 3.6%,
-bounds_trap 3.2%, crc_bitwise 2.7%, strength_ladder 2.5%, vending_fsm 2.5%, conv_mac 2.4%.
+Dev aids (environment variables): `KOPT_PROF=1` (timing of every step and one line per candidate with its score and
+variant), `KOPT_DUMP_ALL=DIR` (every candidate as `cand_N.kir`), `KOPT_DUMP_BAD=FILE`, `KOPT_CHECK=1` (SSA validity after
+each pass), `KOPT_NOPP=1` / `KOPT_NOPP2=1` (scratch peephole off), `KOPT_NOREUSE=1`, `KOPT_NOPEEL3=1`,
+`KOPT_HOSTILE=n` (fan-in guard), `KOPT_FORCE_GU/ROT/ACC/SR`, `KOPT_LOOPOPT=mask`.
 
-## Next steps, in ROI order
+## 4. What was done on the branch (each has a section in `DESIGN.md`)
 
-1. **Merge `claude/regs-sched-66b143`** (scratch peephole), then `algebra` (iv_divmod), after the checks above.
-2. **Large programs (~100k instructions)**: hidden tests include them, and each is worth ~200 normal
-   programs under Average Cycles. Linear-time passes, work budget + safety deadline (~25 s huge,
-   ~2.5 s normal), hot/cold layout so hot code sits in the first `icache_size` instructions, partial
-   rerolling only of code beyond the cache. Generators: `tests/gen_large.py`, `tests/measure_large.py`.
-3. **Register pressure** (spill_storm, few_registers machine): full MIN-then-steer LRU naming with an
-   exact-LRU oracle test, WAW-aware colours, loop-aware spilling (`src/sched2.rs`, `src/ssa.rs`).
-4. **Unroll-and-jam / full inner unroll** for matmul4, transpose8, matvec8, row_sums (new pass; affine
-   dependence test for legality).
-5. **Algebra**: magic division with peeling (digit_sum), divisibility test, signed division by
-   constant, i*c strength reduction (`src/algebra.rs`).
-6. **Layout / control**: latch duplication with rotated placement, cost-based if-conversion,
-   multiversioning on trip count, hot-code budget (MCKP + exact local search) (`src/layout.rs`, `src/control.rs`).
-7. **Mid-end**: wrapped intervals + congruence domain, relational facts (i < n), affine dependence
-   tests, GVN-PRE (`src/domain.rs`, `src/ranges.rs`).
-8. Update `FINAL_FINAL.md` §0.1 (it still says "Rust not started"; that is wrong).
+1. Merged the unmerged first-round branches that passed the checks: scratch peephole (`regs-sched`), `iv_divmod`
+   (`algebra`; fires on no bench program but is correct and removes `div`/`mod` in its own test), node splitting
+   (`layout-control`; fixes `irreducible_loop` on all machines).
+2. **Dominator computation made linear for huge-fan-in joins** (`src/ir.rs`, `analyze`): it marks climbed nodes per
+   join. `large_nest` 25 s -> 1.2 s, so the `too_hostile` guard (`src/large.rs`) is now 40,000 (was 4,000).
+3. **Scratch peephole** runs again after sched2 reorders/renames, and sched2's search scores each candidate *after*
+   the block-local peephole (`sched2::peep_block`).
+4. **Reload cache** `Variant.reuse` (`ssa::rewrite_spills`): the last n loaded/stored scratch words stay available for
+   later uses in the block. `spill_storm|default` 5,116 -> 3,656.
+5. **`peel: 3`** (`passes3::peel_const_loops(.., nest=true)`): fully peel inner constant-trip loops while the whole
+   enclosing loop nest stays within 2x the icache (sizes are counted before clean-up). Unroll-and-jam in effect:
+   `matmul4|wide_fast` 1,352 -> 552. Tried together with the `spill`/`hot`/`sched` settings.
+6. **`Variant.spillk`** (`ssa::allocate`): spill the k least-touched loop-carried values at once; tried with
+   `reuse` and `sched: false`. `spill_storm|no_fused` 5,944 -> 4,764; `poly_mac|few_registers` 144 -> 80.
 
-## Known caveats
+**Lesson about the search (`src/driver.rs`):** it is a greedy walk over `Variant` settings with a work budget. Adding
+a new setting to the walk's neighbour list changed its path and made other programs worse (`row_sums`). New settings
+that only pay off in combination (peel 3 + spill, reuse, spillk) are therefore tried as **extra candidates after the
+walk, from its final setting** (see the blocks guarded by `KOPT_NOPEEL3` / `KOPT_NOREUSE`). Follow that pattern.
 
-- The 11 cases that got slower than the old main (worst `sieve|few_registers` 5,343 → 6,162) are
-  still well below their originals; worth a look when tuning the candidate search.
-- The verify-infra fixes cost ~0.2% cycles; keep them (they fix wrong outputs).
-- GF(2) CRC tables and idiom recognition are implemented off by default: the organisers have not
-  confirmed they are allowed.
-- Local sessions here could not `git commit` (the auto-mode classifier blocked it); the manager
-  committed for them. Commits named "WIP checkpoint by manager" may not build on their own.
+## 5. Open items, best first
 
-## Update (branch `merge/scratch-peephole`, on top of main)
+### 5.1 Hoist spill loads (`spill_storm` on few-register machines): experiment half done
+A hand-written loop for `spill_storm|few_registers` (all 12 accumulators in scratch, loop bound in memory, 3 temp
+names, each load issued two statements ahead of its use) costs **3,497 cycles at n=63 vs 4,587** from kopt now,
+and is verified equal to the original. It is a straight rewrite of the statements in `kit/bench/spill_storm.kir`.
+The generic search does not find it: every non-program-order seed fails in `Region::name_block`
+(`src/sched2.rs`). `notes/experiment_prefetch_seeds.patch` adds `prefetch_order` seeds (program order with each load
+moved up to d = 1..8 places) plus debug prints (`KOPT_S2DEBUG`) and a `KOPT_S2FILE` hook that runs sched2 on one
+candidate file. The debug output showed the failure: only 3 candidate names are free in the loop block, and the
+`reuse` cache keeps one loaded value live across two statements, so a value stays live for ~8 positions and three
+temporaries are not enough at the prefetch distance. Ways forward: (a) make `rewrite_spills` *not* keep values across
+statements when prefetching is wanted and let sched2 hoist; (b) a dedicated pass that software-pipelines spill loads
+with an explicit 3-name rotation; (c) let `name_block` rename the loop counter too.
+Value: `spill_storm` is ~8 % of all cycles, so the potential is roughly 0.5-1 % of the total.
 
-Merged and checked (regression 0 failures, nothing slower than the original, fuzz clean): scratch
-peephole (`claude/regs-sched`), `iv_divmod` (`claude/algebra`), node splitting
-(`claude/layout-control`). New work on the branch: linear-time dominators + `too_hostile` raised to 40000
-(`large_nest`: 100,003 -> 71 instructions), peephole after sched2 and inside its search, the reload
-cache `Variant.reuse`, and `peel = 3` (see DESIGN.md). Sample cycles on the bench: 76,875 -> about 74,850.
-Still unmerged: `claude/midend-8682d5` (sinking, ~no gain), `claude/large-progs-2-4b8b5d` (nothing).
+### 5.2 Other cycle sinks (sum over machines and inputs, before this session's work)
+`sieve` ~8.8 %, `bubble_sort` 6.5 %, `matmul4` 4.2 % (now less), `count_divisors` 3.6 %, `transpose8` 3.6 %,
+`bounds_trap` 3.2 %, `crc_bitwise` 2.7 %, `strength_ladder` 2.5 %, `vending_fsm` 2.5 %, `conv_mac` 2.4 %.
+`transpose8` and `matvec8` are not helped by peel 3 (trip count 8; check the size estimate in `passes3.rs`).
 
-Open items:
-- kfuzz `caught-timing` (e.g. `g63000338`, gen seed 63) is **not a miscompile**: a spill-heavy candidate
-  (`spill: true`) returns the right result but runs ~4.1x the original's instructions, so it hits the
-  driver's step cap (4x + 1000, `Reference::score`) and is rejected as "behaves differently on a timing
-  input". The candidate is only slow; nothing wrong is written. (Checked on 540 inputs.)
-- `large_chain` (100k dependent straight-line ops) is unchanged by kopt.
-- `spill_storm|few_registers` still does ~21 loads per iteration where a rolling-window order needs ~12.
-- Search order matters: the walk in `driver.rs` is greedy, so new settings that need other settings to pay
-  off (peel 3 + spill, reuse) are tried as extra candidates after it.
+### 5.3 Large programs (~100k instructions, each worth ~200 normal programs under Average Cycles)
+Done: all generated families finish with a large margin. `large_chain` (a long dependent chain with random
+constants, nothing reducible) is unchanged and probably at its floor. Still untested: shapes other than what
+`tests/gen_large.py` produces, and a judges' machine that is slower than this laptop (worst case here: 6.2 s of 30 s).
+
+### 5.4 From the original plan (`FINAL_FINAL.md` section 4 and 7), not yet built
+Magic division with peeling, divisibility test, signed division by constants (`src/algebra.rs`); latch duplication
+and cost-based if-conversion; multiversioning on trip count; wrapped intervals and relational facts in the range
+analysis; GVN-PRE. GF(2) CRC tables and idiom recognition exist but are **off by default** (the organisers have not
+confirmed they are allowed).
+
+## 6. Branches and housekeeping
+
+* Unmerged remote branches: `claude/midend-8682d5` (code sinking: correct, almost no gain, skip) and
+  `claude/large-progs-2-4b8b5d` (nothing measured). PRs #1-#7 on GitHub are obsolete (contained in #8); close them.
+  The old `claude/*` branches can go once the PR for this branch is merged.
+* `out/` (kfuzz failure cases) is git-ignored; `kfuzz` writes failing programs to `out/kfuzz/fail/`.
+* Commits made by the assistant end with a `Co-Authored-By: Claude` line.
+
+## 7. Rules that matter for the submission (from `kit/RULES_AND_SUBMISSION.md`)
+
+Time limit per program is 5 s (30 s for ~100k-instruction programs), wall-clock including start-up; a crash or
+time-out counts as a failed case. kopt must write the input unchanged if anything goes wrong (it does: top-level
+catch-all plus an internal deadline in `src/main.rs` / `src/large.rs`). The output must match the input on the
+judges' much larger input set (kopt self-checks every candidate before writing it). The judges use the **last
+commit before the deadline** of the submitted repository: remove `kit/` from that commit and make sure `./build.sh`
+works from a fresh clone.
