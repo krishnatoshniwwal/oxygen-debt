@@ -742,3 +742,10 @@ counted `acc += (x>>i)&1` (popcount of x&mask[i0,N)), `acc ^= ...` (parity), `ac
 and `while y!=0 {y&=y-1; cnt+=k}` (cnt0 + k*popcount(y0), y = 0). Unit tests: emitters vs `count_ones`/`reverse_bits`, loop formulas for N in 1..=32
 and i0 in 0..=33, end-to-end SSA rewrite vs interpreter. Measured (sample cycles, 5 machines): 69,066 -> 67,971; popcount 316 -> 56, bit_reverse 584 -> 60 (default);
 hamming_dist -102 on slow_memory but +17 on wide_fast (the candidate wins on kopt's own timing inputs; the constant 15-op SWAR is slower than Kernighan for sparse xors). `KOPT_NOIDIOM=1` disables.
+
+**Divisibility test `x % c == 0`, odd literal c >= 3** (`algebra::div_test`, `alg` bit 8). `mod x, c` whose only
+use is `eq _, 0` or a `br` becomes `p = x*inv(c); t = p + (A + 2^31); lt t, (B+1) + 2^31` (A = floor(2^31/c),
+B = A + floor((2^31-1)/c)); the branch form swaps its targets. Exact for SIGNED x with no range proof: c | x iff
+p read as signed lies in [-A, B-A] (c*p is then in int32 range and congruent to x, hence equal). Cost lat_mul + 2 ALU.
+Tests: `cargo test divtest` (8-bit analogue, all odd c and all x; 32-bit edge/random for ~1200 c), `tests/alg_divtest.py`.
+Bench: 0 changed cases (fires on no bench program); kfuzz gen/mutate/machines n=300 seed 9: no new problems.

@@ -796,6 +796,89 @@ pub fn div_const(f: &mut Func, rng: &Ranges) -> bool {
     changed
 }
 
+
+// ---------------------------------------------------------------------------
+// Divisibility test `mod x, c == 0` for odd literal c >= 3 (Granlund-Montgomery), exact for
+// SIGNED x. With p = x * inv(c) mod 2^32 and A = floor(2^31/c), B = A + floor((2^31-1)/c):
+// c | x  <=>  p, read as signed, lies in [-A, B - A]  (c*p is then in int32 range and congruent to
+// x mod 2^32, hence equal to x; conversely x = c*k gives p = k). The window test is the unsigned
+// compare (p + A) <u B + 1, done with the signed `lt` by adding 2^31 to both sides.
+// ---------------------------------------------------------------------------
+pub fn divtest_consts(c: u32) -> (u32, u32, u32) {
+    // (inverse, offset added to p, signed bound)
+    let inv = inv_odd(c);
+    let a = ((1u64 << 31) / c as u64) as u32;
+    let b = a + (((1u64 << 31) - 1) / c as u64) as u32;
+    (inv, a.wrapping_add(0x8000_0000), (b + 1).wrapping_add(0x8000_0000))
+}
+
+pub fn divtest(x: u32, c: u32) -> bool {
+    let (inv, off, bound) = divtest_consts(c);
+    (x.wrapping_mul(inv).wrapping_add(off) as i32) < (bound as i32)
+}
+
+pub fn div_test(f: &mut Func) -> bool {
+    let uc = crate::passes::use_counts(f);
+    let mut changed = false;
+    for bi in 0..f.blocks.len() {
+        let b = f.blocks[bi];
+        let old = std::mem::take(&mut f.arena[b].ins);
+        let mut out: Vec<Instr> = Vec::with_capacity(old.len() + 3);
+        for ins in old {
+            if ins.op == Op::Eq && ins.a.len() == 2 {
+                let (m, z) = if ins.a[1] == L0 { (ins.a[0], ins.a[1]) } else { (ins.a[1], ins.a[0]) };
+                if z == L0 && m >= 0 && uc[m as usize] == 1 {
+                    if let Some(pos) = out.iter().rposition(|o| o.d == m) {
+                        let o = &out[pos];
+                        if o.op == Op::Mod && o.a.len() == 2 && o.a[1] < 0 && o.a[0] >= 0 {
+                            let c = !o.a[1] as u64;
+                            if c >= 3 && c & 1 == 1 && c <= SMAX as u64 {
+                                let x = o.a[0];
+                                let (inv, off, bound) = divtest_consts(c as u32);
+                                out.remove(pos);
+                                let p = f.new_val();
+                                let t = f.new_val();
+                                out.push(Instr::new(Op::Mul, p, vec![x, lit(inv as i64)], vec![]));
+                                out.push(Instr::new(Op::Add, t, vec![p, lit(off as i64)], vec![]));
+                                out.push(Instr::new(Op::Lt, ins.d, vec![t, lit(bound as i64)], vec![]));
+                                changed = true;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            // `br (x mod c), A, B` : nonzero -> A, i.e. divisible -> B
+            if ins.op == Op::Br && ins.a.len() == 1 && ins.a[0] >= 0 && uc[ins.a[0] as usize] == 1 && ins.t.len() == 2 {
+                let m = ins.a[0];
+                if let Some(pos) = out.iter().rposition(|o| o.d == m) {
+                    let o = &out[pos];
+                    if o.op == Op::Mod && o.a.len() == 2 && o.a[1] < 0 && o.a[0] >= 0 {
+                        let c = !o.a[1] as u64;
+                        if c >= 3 && c & 1 == 1 && c <= SMAX as u64 {
+                            let x = o.a[0];
+                            let (inv, off, bound) = divtest_consts(c as u32);
+                            out.remove(pos);
+                            let p = f.new_val();
+                            let t = f.new_val();
+                            let r = f.new_val();
+                            out.push(Instr::new(Op::Mul, p, vec![x, lit(inv as i64)], vec![]));
+                            out.push(Instr::new(Op::Add, t, vec![p, lit(off as i64)], vec![]));
+                            out.push(Instr::new(Op::Lt, r, vec![t, lit(bound as i64)], vec![]));
+                            out.push(Instr::no_d(Op::Br, vec![r], vec![ins.t[1], ins.t[0]]));
+                            changed = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push(ins);
+        }
+        f.arena[b].ins = out;
+    }
+    changed
+}
+
 /// `i / c` and `i % c` of an induction variable `i = phi(i0, i + 1)` (c a literal >= 2, i0 a
 /// literal in [0, 2^31), i proven in [0, 2^31) where used) become counters that step and wrap:
 ///   r' = r + 1; w = (r' == c); r = select(w, 0, r');  q = q + w
@@ -917,6 +1000,53 @@ pub fn iv_divmod(f: &mut Func, rng: &Ranges) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn divtest_exact_8bit_analogue() {
+        // same construction at width 8: every odd c, every x (signed)
+        for c in (3u32..128).step_by(2) {
+            let mut inv = c;
+            for _ in 0..4 { inv = inv.wrapping_mul(2u32.wrapping_sub(c.wrapping_mul(inv))) & 255; }
+            let a = 128 / c;
+            let b = a + 127 / c;
+            for x in -128i32..128 {
+                let p = ((x as u32).wrapping_mul(inv)) & 255;
+                let t = (p + a) & 255;
+                assert_eq!(t < b + 1, x % c as i32 == 0, "c={} x={}", c, x);
+            }
+        }
+    }
+
+    #[test]
+    fn divtest_32bit() {
+        let mut s = 0x1234_5678_9abc_def1u64;
+        let mut rnd = || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; s };
+        let mut cs: Vec<u32> = (3u32..2000).step_by(2).collect();
+        cs.extend([65535, 65537, 1_000_003, 0x7FFF_FFFF, 0x7FFF_FFFD, 0x5555_5555, 2147483647 - 2]);
+        for _ in 0..200 { cs.push(((rnd() as u32) & 0x7FFF_FFFF) | 1); }
+        for &c in &cs {
+            if c < 3 { continue; }
+            let mut xs: Vec<i32> = vec![0, 1, -1, i32::MAX, i32::MIN, i32::MIN + 1, i32::MAX - 1];
+            for k in [1i64, 2, 3, 1000, 123456] {
+                for d in -2i64..=2 {
+                    for sg in [-1i64, 1] {
+                        let v = sg * k * c as i64 + d;
+                        if v >= i32::MIN as i64 && v <= i32::MAX as i64 { xs.push(v as i32); }
+                    }
+                }
+            }
+            let m = (i32::MAX as i64 / c as i64) as i64;
+            for sg in [-1i64, 1] { for d in -2i64..=2 {
+                let v = sg * m * c as i64 + d;
+                if v >= i32::MIN as i64 && v <= i32::MAX as i64 { xs.push(v as i32); }
+            } }
+            for _ in 0..300 { xs.push(rnd() as i32); let k = (rnd() as i64) % (m + 1); xs.push((k * c as i64) as i32); xs.push((-k * c as i64) as i32); }
+            for x in xs {
+                assert_eq!(divtest(x as u32, c), x % c as i32 == 0, "c={} x={}", c, x);
+            }
+        }
+    }
 
     #[test]
     fn magic_division_exact() {
