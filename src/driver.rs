@@ -8,6 +8,7 @@ use crate::kir::*;
 use crate::loopopt;
 use crate::memfwd;
 use crate::control;
+use crate::crc;
 use crate::layout;
 use crate::passes;
 use crate::passes2;
@@ -50,11 +51,12 @@ pub struct Variant {
     pub reuse: u8,   // spill code: keep the last n loaded/stored scratch words available for later uses (0 = reload at every use)
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
     pub split: bool, // index-set splitting of a bounds check: a check-free front loop (loopopt::split_checks)
+    pub crc: bool,   // start from the program with GF(2) nibble-table CRC steps (crc.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0, split: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0, split: false, crc: false }
     }
 }
 
@@ -211,13 +213,13 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 /// Everything up to (not including) the choice of block order and final code copying.
 /// What `build_ssa` + the first `phase_a` depend on: the settings they read and the reroll mode
 /// (one program per process). Candidates that differ only in later knobs share this prefix.
-type PaKey = (u8, u8, bool, bool, usize, bool, bool, bool, u8, bool);
+type PaKey = (u8, u8, bool, bool, usize, bool, bool, bool, u8, bool, bool);
 
 fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool, pa: &mut HashMap<PaKey, Func>) -> Result<Func, String> {
     let mut t = prof_start();
     let ic = mc.icache_size;
     let mut irr_f = if light { None } else { let mut g = ir::from_program(prog); if control::has_multi_entry(&mut g) { Some(g) } else { None } };
-    let pa_key: PaKey = (v.thr, v.alg, v.csub, v.fwd, v.ifc, v.iv, v.lazy, v.sccp, large::roll_mode(), light);
+    let pa_key: PaKey = (v.thr, v.alg, v.csub, v.fwd, v.ifc, v.iv, v.lazy, v.sccp, large::roll_mode(), light, v.crc);
     let pa_hit = if std::env::var_os("KOPT_NOPACACHE").is_none() { pa.get(&pa_key).cloned() } else { None };
     let hit = pa_hit.is_some();
     let mut f = if let Some(c) = pa_hit {
@@ -232,6 +234,11 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool, pa: &mut HashM
                 control::split_by_state(&mut f, r, cap);
             }
         }
+        ssa::build_ssa(&mut f);
+        f
+    } else if v.crc {
+        // crc.rs candidate: its own program, so large.rs's per-process start cache must not be used
+        let mut f = ir::from_program(prog);
         ssa::build_ssa(&mut f);
         f
     } else {
@@ -419,6 +426,7 @@ struct Cand {
 
 struct Search<'a> {
     prog: &'a Program,
+    prog_crc: Option<Program>, // the program with nibble-table CRC steps (crc.rs), if it has any
     mc: &'a Machine,
     profile: Option<&'a backend::Profile>,
     rf: &'a Reference,
@@ -465,7 +473,7 @@ impl<'a> Search<'a> {
         if self.mids.contains_key(v) {
             return;
         }
-        let r = catch_unwind(AssertUnwindSafe(|| midend(self.prog, self.mc, v, self.light, &mut self.pa)));
+        let r = catch_unwind(AssertUnwindSafe(|| midend(if v.crc { self.prog_crc.as_ref().unwrap_or(self.prog) } else { self.prog }, self.mc, v, self.light, &mut self.pa)));
         match r {
             Ok(Ok(f)) => {
                 self.spent += self.size + f.count_instrs() + self.range_work();
@@ -665,6 +673,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     large::set_count_inputs(rf.first_inputs(2));
     let mut s = Search {
         prog: &prog,
+        prog_crc: if std::env::var_os("KOPT_NOCRC").is_none() { catch_unwind(AssertUnwindSafe(|| crc::transform(&prog))).ok().flatten() } else { None },
         mc,
         profile: profile.as_ref(),
         rf: &rf,
@@ -1009,6 +1018,14 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
                 }
                 let v = state.0;
                 s.run(&v, *be);
+            }
+        }
+    }
+    if s.prog_crc.is_some() {
+        // GF(2) nibble tables for bitwise CRC steps (crc.rs): extra candidates after the walk
+        for v in [Variant { crc: true, ..state.0 }, Variant { crc: true, ..Variant::default() }] {
+            if s.can_start() {
+                consider2(&mut s, &mut state, v);
             }
         }
     }

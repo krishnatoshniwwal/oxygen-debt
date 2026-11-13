@@ -3,6 +3,7 @@ mod algebra;
 mod backend;
 mod domain;
 mod control;
+mod crc;
 mod driver;
 mod evalsim;
 mod ir;
