@@ -98,7 +98,7 @@ Sample total now 72,514 cycles (from 74,369 at the start of the loop), 0 failure
 
 | # | Item | Expected gain | Effort | Risk | State |
 |---|---|---|---|---|---|
-| 1 | Make single search candidates cheaper (cache/incremental `ranges`, `phase_a`; 5.0c) | none in cycles; keeps big programs under the time limit on a slower judge machine | medium | low | not started |
+| 1 | Make single search candidates cheaper (5.0c) | none in cycles; keeps big programs under the time limit on a slower judge machine | medium | low | DONE for the shared prefix (`phase_a` cache, section 5.0d); incremental `ranges` not done (~15 %, skipped: risk) |
 | 2 | Spill-load hoisting for `spill_storm` (5.1): fix register pressure first, then the prefetch seeds | 0.5-1 % | high | medium | half done, notes in 5.1 |
 | 3 | `sieve` / `bubble_sort` (9.4 % / 6.1 % of cycles, ratio 0.25): look for a better inner-loop form | unknown, maybe 1 % | high | medium | not started |
 | 4 | Plan items of 5.4 (latch duplication, cost-based if-conversion, multiversioning on trip count, relational range facts) | unknown | high | medium | not started |
@@ -133,6 +133,12 @@ Added after the walk from its final setting: 3 cases better (`rotate_array|slow_
 
 ### 5.0 Determinism of the search (DONE, loop iteration 8)
 
+### 5.0d `phase_a` prefix cache (DONE, loop 3a009676 run 1)
+`driver.rs`: `midend` caches the function right after `build_ssa` + the first `phase_a` in `Search.pa`, keyed by exactly what those read:
+`(thr, alg, csub, fwd, ifc, iv, lazy, sccp, large::roll_mode(), light)` (type `PaKey`). Candidates that differ only in later knobs (peel, unroll, sched, spill,
+hot, reuse, spillk, rot, gu, acc, sr, tree, sink, spec) reuse a clone instead of recomputing. Exact (a clone of what would be computed), so output is unchanged:
+500 bench cases bit-identical (0 changed; slowest bench program 0.85 -> 0.56 s), 28 unit tests, kfuzz gen/mutate seed 505 clean, ten large programs identical
+cycles (worst 6.6 s, was 8.8 s; max RSS 0.4 GB). Slow fuzz case `g303001329` 2.09 -> 1.51 s. Switch off for debugging with `KOPT_NOPACACHE=1`.
 ### 5.0c Profile of a slow 1,162-instruction program (done, loop iteration 10: no cheap saving)
 
 `KOPT_PROF=1` on `out/kfuzz/fail/gen/g101000773.kir` (1.85 s search, 19 candidates): `phase_a` 0.45 s (11 runs), `ranges` 0.33 s (43 calls, ~8 ms each), `post_sched2` 0.36 s (new profile label), peeling 0.11 s, ifconv 0.08 s, mem_pass 0.05 s; the rest is spread thinly (allocate, scheduling, scoring). No single hot spot: the best lever would be caching or incremental `ranges` (up to ~15 % of the time). Not done: the saving is too small for the risk.

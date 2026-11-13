@@ -208,11 +208,20 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 }
 
 /// Everything up to (not including) the choice of block order and final code copying.
-fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func, String> {
+/// What `build_ssa` + the first `phase_a` depend on: the settings they read and the reroll mode
+/// (one program per process). Candidates that differ only in later knobs share this prefix.
+type PaKey = (u8, u8, bool, bool, usize, bool, bool, bool, u8, bool);
+
+fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool, pa: &mut HashMap<PaKey, Func>) -> Result<Func, String> {
     let mut t = prof_start();
     let ic = mc.icache_size;
     let mut irr_f = if light { None } else { let mut g = ir::from_program(prog); if control::has_multi_entry(&mut g) { Some(g) } else { None } };
-    let mut f = if (v.thr > 0 || irr_f.is_some()) && !light {
+    let pa_key: PaKey = (v.thr, v.alg, v.csub, v.fwd, v.ifc, v.iv, v.lazy, v.sccp, large::roll_mode(), light);
+    let pa_hit = if std::env::var_os("KOPT_NOPACACHE").is_none() { pa.get(&pa_key).cloned() } else { None };
+    let hit = pa_hit.is_some();
+    let mut f = if let Some(c) = pa_hit {
+        c
+    } else if (v.thr > 0 || irr_f.is_some()) && !light {
         // DFA state splitting and node splitting (control.rs) work before SSA, so they bypass large.rs's cached start
         let mut f = irr_f.take().unwrap_or_else(|| ir::from_program(prog));
         control::split_entries(&mut f, 24);
@@ -229,7 +238,12 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     };
     chk(&mut f, "build_ssa");
     prof("build_ssa (+reroll)", &mut t);
-    phase_a(&mut f, v, light);
+    if !hit {
+        phase_a(&mut f, v, light);
+        if std::env::var_os("KOPT_NOPACACHE").is_none() {
+            pa.insert(pa_key, f.clone());
+        }
+    }
     prof("phase_a total", &mut t);
     if v.peel != 0 {
         let budget = match v.peel { 1 => ic, 3 => 2 * ic, 4 => 3 * ic, 5 => 4 * ic, 6 => 6 * ic, _ => (4 * ic).max(256) } as usize; // peel 3-5: the enclosing loop nest (sizes counted before clean-up, which roughly halves them) may be 2x, 3x, 4x the icache
@@ -390,6 +404,7 @@ struct Search<'a> {
     profile: Option<&'a backend::Profile>,
     rf: &'a Reference,
     mids: HashMap<Variant, Option<Func>>,
+    pa: HashMap<PaKey, Func>,
     results: Vec<Cand>,
     seen: HashMap<String, f64>,
     n: usize,
@@ -413,7 +428,7 @@ impl<'a> Search<'a> {
         if self.mids.contains_key(v) {
             return;
         }
-        let r = catch_unwind(AssertUnwindSafe(|| midend(self.prog, self.mc, v, self.light)));
+        let r = catch_unwind(AssertUnwindSafe(|| midend(self.prog, self.mc, v, self.light, &mut self.pa)));
         match r {
             Ok(Ok(f)) => {
                 self.spent += self.size + f.count_instrs();
@@ -608,6 +623,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         profile: profile.as_ref(),
         rf: &rf,
         mids: HashMap::new(),
+        pa: HashMap::new(),
         results: Vec::new(),
         seen: HashMap::new(),
         n: 0,
