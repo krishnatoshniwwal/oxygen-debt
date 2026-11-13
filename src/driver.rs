@@ -497,9 +497,14 @@ impl<'a> Search<'a> {
     fn try_tsp(&mut self, f: &Func, cp: &Compiled, v: &Variant, be: Backend) -> Option<f64> {
         let (prog, mc, profile, rf) = (self.prog, self.mc, self.profile, self.rf);
         let r = catch_unwind(AssertUnwindSafe(|| -> Option<(String, Compiled, usize, f64)> {
+            let mut t = prof_start();
             let traces = rf.traces(cp);
+            prof("tsp traces", &mut t);
             let counts = layout::dyn_counts(f, cp, &traces);
-            let ord = layout::improve(f, mc, &counts, profile)?;
+            prof("tsp dyn_counts", &mut t);
+            let ord = layout::improve(f, mc, &counts, profile);
+            prof("tsp improve", &mut t);
+            let ord = ord?;
             let mut g = f.clone();
             g.blocks = ord;
             let out = ir::to_text(&g);
@@ -513,6 +518,7 @@ impl<'a> Search<'a> {
             }
             let cp2 = compile_program(&newprog);
             let sc = rf.score(&cp2)?;
+            prof("tsp compile+score", &mut t);
             Some((out, cp2, newprog.instrs.len(), sc))
         }));
         self.spent += f.count_instrs() / 3;
@@ -553,7 +559,9 @@ impl<'a> Search<'a> {
             if newprog.params.len() != prog.params.len() {
                 return Err("parameter count changed".into());
             }
+            prof("parse+features", &mut t);
             let cp = compile_program(&newprog);
+            prof("compile_program", &mut t);
             let sc = match rf.score(&cp) {
                 Some(sc) => sc,
                 None => {
