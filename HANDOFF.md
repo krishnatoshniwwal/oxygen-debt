@@ -159,3 +159,9 @@ catch-all plus an internal deadline in `src/main.rs` / `src/large.rs`). The outp
 judges' much larger input set (kopt self-checks every candidate before writing it). The judges use the **last
 commit before the deadline** of the submitted repository: remove `kit/` from that commit and make sure `./build.sh`
 works from a fresh clone.
+
+### Submission readiness check (loop iteration 7, 2026-11-13, `main` at `da30d22`)
+Fresh clone of `main` + `git rm -r kit` + `./build.sh` (6 s, exit 0) + `./kopt sieve.kir --machine machine_default.cfg -o out.kir`:
+works from the clone without `kit/`; `kvalidate --random 200` says the output behaves like the input (1,297 -> 1,187 cycles on the sample).
+Also verified: `kopt` and `build.sh` are tracked with mode 100755; `.gitattributes` forces LF for `*.sh`, `*.py`, `kopt`; no `.o`/`target/`/`__pycache__`
+tracked; `DESIGN.md` has the 7 required headings in order (sections 1-7; later `## 8.` sections are extra). The only remaining step before submitting is `git rm -r kit` in the last commit.
