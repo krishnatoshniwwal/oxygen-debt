@@ -221,3 +221,12 @@ Fresh clone of `main` + `git rm -r kit` + `./build.sh` (6 s, exit 0) + `./kopt s
 works from the clone without `kit/`; `kvalidate --random 200` says the output behaves like the input (1,297 -> 1,187 cycles on the sample).
 Also verified: `kopt` and `build.sh` are tracked with mode 100755; `.gitattributes` forces LF for `*.sh`, `*.py`, `kopt`; no `.o`/`target/`/`__pycache__`
 tracked; `DESIGN.md` has the 7 required headings in order (sections 1-7; later `## 8.` sections are extra). The only remaining step before submitting is `git rm -r kit` in the last commit.
+
+### Pre-submission verification (2026-11-13, `main` at `a32c393`; run by hand after loop run 6)
+Everything below was run on the final code (WSL on the Windows laptop, binary built from `main`).
+* **Official `kvalidate` on every optimised bench program:** all 100 programs x 5 public machines, `--random 300 --seed 7`: 500/500 OK (`$HOME/kw/val1.sh`; ~37 s with `xargs -P 4`).
+* **Determinism:** all 10 generated large programs (~100k instructions) give byte-identical output on two consecutive runs (quiet machine). Normal programs: identical (see 5.0 for the only exception, the 2.6 s hard-deadline fallback under heavy parallel load).
+* **Unseen machines:** 4 hand-made machine files (issue 1-4, mem_ports 1-3, registers 4-12, icache 16-128, penalties 0-9, lat_div 6-30, all four fused combinations) x 100 programs = 400 runs, `kvalidate --random 60`: 0 failures; `mac` never appears when `fused_mac=0`, `addsh` never when `fused_addsh=0`. (Note: `registers` must be >= 4; the validator rejects 3.)
+* **Wrong profiles:** 7 programs x 2 foreign `.prof` files x 2 machines = 28 runs: 0 failures.
+* **Rules hygiene:** no bench program names or hashes in `src/` (the only name matches are an integer `gcd` helper and a comment about popcount); no external crates; `kopt`/`build.sh` mode 100755; `.gitattributes` forces LF; `kit/` not tracked; fresh clone builds in ~5 s and runs from any folder.
+* **Not verified:** the judges' machine speed (single core, Ubuntu 22.04). Slowest bench program ~0.5 s, large programs <= 6.3 s here (limits 5 s / 30 s).
