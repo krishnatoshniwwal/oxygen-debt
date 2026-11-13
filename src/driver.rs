@@ -540,7 +540,7 @@ impl<'a> Search<'a> {
 fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: usize) {
     // Hot/cold layout (large.rs): the best setting again, with the loops moved in front of
     // run-once code. Needs no new mid-end run (the mids are kept).
-    if size as i64 > mc.icache_size && !large::soft_expired() {
+    if size as i64 > mc.icache_size && !(size > MID && large::soft_expired()) {
         let v = v0x;
         for lm in [1u8, 2] {
             large::set_layout(lm);
@@ -554,7 +554,7 @@ fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: u
         let saved = std::mem::take(&mut s.mids);
         let cap = if size > MID { 14 * size + 10_000 } else { usize::MAX };
         for mode in [1u8, 2, 3] {
-            if large::soft_expired() || s.spent > cap {
+            if (size > MID && large::soft_expired()) || s.spent > cap {
                 break;
             }
             large::set_roll(mode);
@@ -569,7 +569,7 @@ fn large_extras(s: &mut Search, v0x: Variant, b0: Backend, mc: &Machine, size: u
             }
             vs.dedup();
             for v in vs {
-                if large::soft_expired() || s.spent > cap {
+                if (size > MID && large::soft_expired()) || s.spent > cap {
                     break;
                 }
                 s.run(&v, b0);
@@ -636,7 +636,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     };
 
     fn consider(s: &mut Search, state: &mut (Variant, Option<f64>), v: Variant) {
-        if s.spent > WORK_BUDGET || large::soft_expired() {
+        if s.spent > WORK_BUDGET || (s.size > MID && large::soft_expired()) {
             return;
         }
         let sc = s.run(&v, BACKENDS[0]);
@@ -664,7 +664,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
         tries.push(Variant { ifc: 0, ..b });
         for v in tries {
-            if large::soft_expired() || rolled_big_win || !large::fits_half(t_first) {
+            if (size > MID && large::soft_expired()) || rolled_big_win || (size > MID && !large::fits_half(t_first)) {
                 break;
             }
             let sc = s.run(&v, b0);

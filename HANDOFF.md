@@ -118,6 +118,18 @@ statements, or a dedicated 3-name rotation pass); the seeds only matter after th
 
 Added after the walk from its final setting: 3 cases better (`rotate_array|slow_memory` 368 -> 350, `insertion_sort` -13), 3 worse (`lcm_pair` +12..+20 on three machines), total change about 0. Not kept.
 
+### 5.0 Determinism of the search (DONE, loop iteration 8)
+
+kfuzz reported `nondeterministic` on 1,000+ instruction generated programs (the rules require the same output every run). Cause: for programs of
+normal size the search still obeyed the *wall-clock* soft limit (`large::soft_expired`, 1.73 s) in `large_extras` (hot/cold layout and reroll
+candidates, run last and often the winner) and in the main walk. A run that was merely a little slower (load) dropped those candidates, e.g.
+`g101000773` gave two different outputs (the second under load). Fix (`driver.rs`): the clock gates now apply only when `size > MID` (6000);
+normal programs are limited by the deterministic work counter `spent` only, and the 2.6 s hard-deadline fallback still protects the time limit.
+Check: the two cases above give identical output quiet and with 8 copies running at once; the 500 bench cases are bit-identical (0 changed, tmax 0.66 s);
+28 unit tests pass; kfuzz gen/mutate seeds 101/202/303/404 x 500: no mismatch. **Still seen** (rare, only under heavy parallel load): generated
+programs of ~430-1,160 instructions take 1.8-2.2 s alone (bench max is 0.7 s), so with many kfuzz threads they reach the 2.6 s hard fallback and
+differ. If the judges' machine is much slower than this laptop, look at lowering `WORK_BUDGET` (16,000) so that such programs finish well before 1 s.
+
 ### 5.1b Evaluated in loop iteration 4, no code change (do not repeat)
 * **Worst remaining ratios** (optimized/original, current `main`): `factorial_mod` 0.63-0.79 on every machine, `multi_exit` 0.41-0.66,
   `rle_encode|few_registers` 0.42, `sieve|slow_memory` 0.41. Everything else is below 0.4.
