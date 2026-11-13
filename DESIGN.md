@@ -690,3 +690,47 @@ nest allowed to reach 3x or 4x the icache (sizes are counted before clean-up, so
 Tried after the walk together with `peel: 3` (same pressure settings), so it only adds candidates. Measured:
 sample cycles -2.0 %, 12 bench cases better (`transpose8`, `matvec8`, `crc_bitwise`, `row_sums`), 2 slightly worse,
 none slower than the original; fuzz clean.
+
+
+**`split_checks`: why the front loop is exact** (`loopopt::split_checks`, setting `split`). Source loop:
+`h: a1 = i + d1; if !(a1 < b) exit; ... C: a2 = i + d2; if !(a2 < K) trap; ... back to h`, with `b` loop-invariant,
+`i` a header phi, `K` a literal, `delta = d2 - d1`, `kp = K - delta`. The front loop `h2/b2` copies the header
+instructions and the body (without the check) and runs while `a1 < min(b, kp)`, computed once in the preheader;
+when its test fails, control enters the original loop `h` with the phis taken from the front loop's current state.
+The argument has four parts.
+1. *Entry state.* `h2` is entered from the preheader with the original initial phi values; `h` is entered only from `h2`,
+   with the phi values of the last `h2` iteration. So the original loop resumes at an iteration boundary, with exactly
+   the state the original program would have after the same number of iterations (induction on iterations: `b2` computes
+   the same values the original body computes, and the header and the body contain no other exits, see 3).
+2. *Each front iteration is an original iteration.* It runs only if `a1 < b` (the original header test passes, so the
+   original would enter the body) and `a1 < kp`. If `a1 < kp` implies `a2 < K`, the original check also passes, the
+   `trap` block is not reached, and the original executes the identical instruction sequence. Because the check is
+   the only branch in the body (every other chain block ends in `jmp`, the check's other target is a block of
+   one `trap`) and `b` is invariant, nothing else differs. Hence the front loop executes a prefix of the original
+   iterations and no other.
+3. *Trap timing.* Instructions that can trap (loads, div, mod, `trap`) keep their relative order inside an iteration,
+   and the front loop's iterations are original iterations in order, so any trap inside them happens at the same state
+   as in the original. The header is evaluated in `h2` for the final, failing test and then again in `h`; the
+   header holds no store, vector store or trap (`try_split_checks` rejects those), so the repeat is a pure recomputation
+   of the same values; a load there that would trap traps in `h2` at the same state as in `h`, with the same code.
+   The check is never skipped in an iteration where it would fire: on the first iteration with `a1 >= min(b, kp)`
+   the original loop `h` runs, re-tests `a1 < b` and re-evaluates the check itself, so the exit, the trap and any
+   iteration after it come from the original code, at the correct iteration.
+4. *Implication `a1 < kp => a2 < K` in wrapped 32-bit arithmetic* (`Lt` is signed). `a2 = a1 + delta` modulo 2^32.
+   - `delta >= 0`: `a1 < kp` means `a1 + delta < K` as integers; `a1 >= -2^31` gives `a1 + delta >= -2^31`, and
+     `K <= 2^29` so there is no overflow. Sound for every `a1` (also when `i` or `a1` themselves wrapped, since only the
+     value of `a1` as a 32-bit number enters).
+   - `delta < 0`: the sum `a1 + delta` can fall below -2^31, wrap to a large positive number and fail `a2 < K`.
+     The code rejects the case unless the range of `i` has upper bound `<= 0x7fffffff`, i.e. `i` is non-negative.
+     **This guard is not sufficient.** `a1 = i + d1` itself can wrap: with `d1 > 0` and `i >= 2^31 - d1`, `a1` is a
+     large negative number (so `a1 < b` and `a1 < kp` hold), while `a2 = i + d2` stays in `[0, 2^31)` and may be `>= K`.
+     The original traps, the front loop does not. Counterexample (`split_checks_wrap_probe`, `#[ignore]`d because it
+     fails): `i = arg & 0x7fffffff`, `a1 = i + 100`, loop while `a1 < 5`, check `i < 64`; for `arg = 2147483600` the
+     original traps, the transformed program does not. It needs the counter to enter the loop within `d1` of 2^31, which
+     value ranges accept (range `[0, 0x7fffffff]`) but no benchmark does. A sound fix: for `delta < 0` also require
+     `rng.get(i).1 + max(d1, d2, 0) <= 0x7fffffff`, so that neither `a1` nor `a2` can wrap upward (then `a1 >= -2^20` as
+     well, and `a1 + delta >= -2^21` cannot underflow). Not applied here (only DESIGN.md and tests were in scope).
+   - The other constants: `|d1|, |d2| <= 2^20`, `|K|, |kp| <= 2^29` keep `kp` and the sums in range, so `min(b, kp)` and
+     the comparisons are computed without wrap; a literal `b` is folded with `kp` at compile time.
+Test: `split_checks_bounds_trap_exhaustive` runs `bounds_trap` for every n in 0..=300 (the program masks n with 255,
+so n = 65..=255 trap and the rest return), with and without `unroll_guarded` (u = 2, 4, 8), against the original.

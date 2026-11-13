@@ -1472,6 +1472,132 @@ x:
         }
     }
 
+    /// The scalar clean-up rounds of driver.rs `phase_a` (sccp/lazy/algebra/ifconv are not needed for this shape).
+    fn mini_phase_a(f: &mut Func) {
+        let scalar = |f: &mut Func| {
+            for _ in 0..6 {
+                let c1 = passes::scalar_pass(f);
+                let c2 = passes::cleanup_cfg(f);
+                let c3 = passes::dce(f, None);
+                if !(c1 || c2 || c3) {
+                    break;
+                }
+            }
+        };
+        scalar(f);
+        for _ in 0..4 {
+            let rng = Ranges::new(f, 14);
+            let c1 = crate::passes2::range_simplify(f, &rng, true);
+            if c1 {
+                scalar(f);
+            }
+            let rng = Ranges::new(f, 14);
+            let c2 = crate::passes2::mem_pass(f, &rng, true);
+            if c2 {
+                scalar(f);
+            }
+            let rng = Ranges::new(f, 14);
+            let c3 = crate::passes2::licm(f, &rng);
+            if c3 {
+                scalar(f);
+            }
+            if !(c1 || c2 || c3) {
+                break;
+            }
+        }
+    }
+
+    /// Exhaustive over n = 0..=300 for the `bounds_trap` shape (copy of kit/bench/bounds_trap.kir, the
+    /// kit being git-ignored): the loop stores at 300 + i, loads i and traps once i reaches 64. The
+    /// program masks its argument with 255, so it traps for n in 65..=255 and finishes otherwise.
+    /// Driven like driver.rs midend with `Variant { split: true }`: build_ssa, phase_a, split_checks,
+    /// phase_a, optional unroll_guarded, then lowering.
+    #[test]
+    fn split_checks_bounds_trap_exhaustive() {
+        let src = "func bounds_trap(v0)
+entry:
+  and v1, v0, 255
+  mov v0, v1
+  const v2, 0
+  const v3, 0
+  jmp for_head1
+for_head1:
+  lt v4, v3, v0
+  br v4, for_body2, for_exit3
+for_body2:
+  lt v6, v3, 64
+  eq v5, v6, 0
+  br v5, then4, endif5
+then4:
+  trap 7
+endif5:
+  add v7, 300, v3
+  store v7, v2
+  load v8, v3
+  add v9, v2, v8
+  mov v2, v9
+  add v10, v3, 1
+  mov v3, v10
+  jmp for_head1
+for_exit3:
+  ret v2
+";
+        let orig = parse_program(src).unwrap();
+        let co = compile_program(&orig);
+        for gu in [0usize, 2, 4, 8] {
+            let mut f = from_program(&orig);
+            ssa::build_ssa(&mut f);
+            mini_phase_a(&mut f);
+            assert!(split_checks(&mut f), "no split (gu {})", gu);
+            mini_phase_a(&mut f);
+            if gu > 1 {
+                unroll_guarded(&mut f, gu);
+                mini_phase_a(&mut f);
+            }
+            ssa::check_ssa(&mut f).unwrap();
+            ssa::destruct_ssa(&mut f);
+            ssa::allocate(&mut f, None, false, false, 0, 0, 0).unwrap();
+            let text = to_text(&f);
+            assert!(text.contains("sc_body"), "gu {}\n{}", gu, text);
+            let cn = compile_program(&parse_program(&text).unwrap());
+            let mut traps = 0;
+            for n in 0..=300u32 {
+                let inp = Inputs { args: vec![n], segments: vec![], vin: BTreeMap::new() };
+                let a = execute(&co, &inp, 200000, false);
+                let b = execute(&cn, &inp, 2000000, false);
+                if matches!(a.outcome, Outcome::Explicit(7)) {
+                    traps += 1;
+                }
+                assert!(!differs(&a, &b), "gu {} n {} differs\n{}", gu, n, text);
+            }
+            assert_eq!(traps, 255 - 64);
+        }
+    }
+
+    /// Wrap-around probe for delta < 0: counter p starts anywhere in [0, 2^31), a1 = p + 100 wraps
+    /// negative for p >= 2^31 - 100 while a2 = p does not. Asserts the split keeps behaviour;
+    /// it currently FAILS (original traps, split program does not), hence #[ignore]. See DESIGN.md.
+    #[test]
+    #[ignore = "known unsound: delta < 0 with a wrapping a1, see DESIGN.md"]
+    fn split_checks_wrap_probe() {
+        let src = "func f(v0)\nentry:\n  and v3, v0, 2147483647\n  const v5, 0\n  jmp h\nh:\n  add v6, v3, 100\n  lt v4, v6, 5\n  br v4, b, x\nb:\n  lt v7, v3, 64\n  br v7, c, t\nc:\n  add v5, v5, 1\n  add v3, v3, 1\n  jmp h\nx:\n  ret v5\nt:\n  trap 3\n";
+        let orig = parse_program(src).unwrap();
+        let co = compile_program(&orig);
+        let mut f = from_program(&orig);
+        ssa::build_ssa(&mut f);
+        let split = split_checks(&mut f);
+        assert!(split);
+        ssa::destruct_ssa(&mut f);
+        ssa::allocate(&mut f, None, false, false, 0, 0, 0).unwrap();
+        let cn = compile_program(&parse_program(&to_text(&f)).unwrap());
+        for n in [0u32, 5, 63, 64, 2147483547, 2147483600, 2147483647, 0x8000_0000, 0xffff_ffff] {
+            let inp = Inputs { args: vec![n], segments: vec![], vin: BTreeMap::new() };
+            let a = execute(&co, &inp, 200000, false);
+            let b = execute(&cn, &inp, 2000000, false);
+            assert!(!differs(&a, &b), "wrap probe n={} orig={:?} new={:?}", n, a.outcome, b.outcome);
+        }
+    }
+
     #[test]
     fn rotation_moves_the_load() {
         let text = run_variant(PROGS[2], 1, 0);
