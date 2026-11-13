@@ -8,6 +8,7 @@ mod driver;
 mod evalsim;
 mod ir;
 mod large;
+mod kern;
 mod kir;
 mod loopopt;
 mod memfwd;

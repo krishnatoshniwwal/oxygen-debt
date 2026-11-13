@@ -9,6 +9,7 @@ use crate::loopopt;
 use crate::memfwd;
 use crate::control;
 use crate::crc;
+use crate::kern;
 use crate::layout;
 use crate::passes;
 use crate::passes2;
@@ -51,12 +52,13 @@ pub struct Variant {
     pub reuse: u8,   // spill code: keep the last n loaded/stored scratch words available for later uses (0 = reload at every use)
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
     pub split: bool, // index-set splitting of a bounds check: a check-free front loop (loopopt::split_checks)
+    pub kern: u8,    // kern.rs idioms (Kernighan popcount loop, bit-parity loop): 0 = off, 1 = SWAR with multiply, 2 = without
     pub crc: bool,   // start from the program with GF(2) nibble-table CRC steps (crc.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0, split: false, crc: false }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, sink: false, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0, split: false, kern: 0, crc: false }
     }
 }
 
@@ -148,6 +150,11 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
                 lz = true;
             }
         }
+        if v.kern != 0 && kern::kern(f, v.kern) {
+            chk(f, "kern");
+            scalar(f);
+            lz = true;
+        }
         if v.alg & 2 != 0 {
             let rng = Ranges::new(f, 14);
             if algebra::div_const(f, &rng) {
@@ -213,13 +220,13 @@ fn phase_a(f: &mut Func, v: &Variant, light: bool) {
 /// Everything up to (not including) the choice of block order and final code copying.
 /// What `build_ssa` + the first `phase_a` depend on: the settings they read and the reroll mode
 /// (one program per process). Candidates that differ only in later knobs share this prefix.
-type PaKey = (u8, u8, bool, bool, usize, bool, bool, bool, u8, bool, bool);
+type PaKey = (u8, u8, bool, bool, usize, bool, bool, bool, u8, bool, bool, u8);
 
 fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool, pa: &mut HashMap<PaKey, Func>) -> Result<Func, String> {
     let mut t = prof_start();
     let ic = mc.icache_size;
     let mut irr_f = if light { None } else { let mut g = ir::from_program(prog); if control::has_multi_entry(&mut g) { Some(g) } else { None } };
-    let pa_key: PaKey = (v.thr, v.alg, v.csub, v.fwd, v.ifc, v.iv, v.lazy, v.sccp, large::roll_mode(), light, v.crc);
+    let pa_key: PaKey = (v.thr, v.alg, v.csub, v.fwd, v.ifc, v.iv, v.lazy, v.sccp, large::roll_mode(), light, v.crc, v.kern);
     let pa_hit = if std::env::var_os("KOPT_NOPACACHE").is_none() { pa.get(&pa_key).cloned() } else { None };
     let hit = pa_hit.is_some();
     let mut f = if let Some(c) = pa_hit {
@@ -426,6 +433,7 @@ struct Cand {
 
 struct Search<'a> {
     prog: &'a Program,
+    has_kern: bool, // a kern.rs idiom is present (checked on a throw-away copy)
     prog_crc: Option<Program>, // the program with nibble-table CRC steps (crc.rs), if it has any
     mc: &'a Machine,
     profile: Option<&'a backend::Profile>,
@@ -673,6 +681,12 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
     large::set_count_inputs(rf.first_inputs(2));
     let mut s = Search {
         prog: &prog,
+        has_kern: std::env::var_os("KOPT_NOKERN").is_none() && catch_unwind(AssertUnwindSafe(|| {
+            let mut f = ir::from_program(&prog);
+            ssa::build_ssa(&mut f);
+            for _ in 0..4 { if !passes::scalar_pass(&mut f) { break; } }
+            kern::kern(&mut f, 1)
+        })).unwrap_or(false),
         prog_crc: if std::env::var_os("KOPT_NOCRC").is_none() { catch_unwind(AssertUnwindSafe(|| crc::transform(&prog))).ok().flatten() } else { None },
         mc,
         profile: profile.as_ref(),
@@ -1047,6 +1061,16 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         for v in [Variant { crc: true, ..state.0 }, Variant { crc: true, ..Variant::default() }] {
             if s.can_start() {
                 consider2(&mut s, &mut state, v);
+            }
+        }
+    }
+    if s.has_kern {
+        // kern.rs idioms (Kernighan popcount, bit parity): extra candidates after the walk
+        for k in [1u8, 2] {
+            for v in [Variant { kern: k, ..state.0 }, Variant { kern: k, ..Variant::default() }] {
+                if s.can_start() {
+                    consider2(&mut s, &mut state, v);
+                }
             }
         }
     }
