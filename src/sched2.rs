@@ -822,6 +822,9 @@ impl Region {
                         touched[c] = true;
                     }
                     None => {
+                        if std::env::var_os("KOPT_S2DEBUG").is_some() {
+                            eprintln!("   name_block fails: value {} ({:?}) pos {} lastuse {} nc {} busy {:?}", i, ins.op, p, q, nc, busy);
+                        }
                         names.clear();
                         return;
                     }
@@ -1074,6 +1077,35 @@ impl<'a> Opt<'a> {
         order
     }
 
+    /// Program order, except that every load may start up to `d` places earlier than where it is
+    /// (as far as the dependences allow): loads of spilled values run ahead of their uses by a
+    /// bounded distance, so their latency is hidden without every load being hoisted to the top
+    /// (which would need more names than the machine has).
+    fn prefetch_order(&self, reg: &Region, d: usize) -> Vec<usize> {
+        let n = reg.n;
+        let mut npred: Vec<usize> = reg.preds.iter().map(|p| p.len()).collect();
+        let key = |i: usize| if reg.ins[i].op == Op::Load { i.saturating_sub(d) } else { i };
+        let mut ready: Vec<usize> = (0..n).filter(|&i| npred[i] == 0).collect();
+        let mut order = Vec::with_capacity(n);
+        while !ready.is_empty() {
+            let mut bi = 0;
+            for (ri, &i) in ready.iter().enumerate() {
+                if (key(i), i) < (key(ready[bi]), ready[bi]) {
+                    bi = ri;
+                }
+            }
+            let i = ready.swap_remove(bi);
+            order.push(i);
+            for &s in &reg.succs[i] {
+                npred[s] -= 1;
+                if npred[s] == 0 {
+                    ready.push(s);
+                }
+            }
+        }
+        order
+    }
+
     /// Optimise one block against its windows. Returns true if the block changed.
     pub fn opt_block(&mut self, b: usize, iters: usize) -> bool {
         let n_ins = self.net.blocks[b].len();
@@ -1098,9 +1130,27 @@ impl<'a> Opt<'a> {
                 seeds.push(o);
             }
         }
+        if std::env::var_os("KOPT_NOPREFETCH").is_none() && (0..n).any(|i| reg.ins[i].op == Op::Load) {
+            for d in [1usize, 2, 3, 4, 6, 8] {
+                let o = self.prefetch_order(&reg, d);
+                if o.len() == n && !seeds.contains(&o) {
+                    seeds.push(o);
+                }
+            }
+        }
+        let dbg = std::env::var_os("KOPT_S2DEBUG").is_some();
+        if dbg {
+            eprintln!("s2 block {} n {} c0 {} seeds {}", b, n, c0, seeds.len());
+        }
         for o in seeds {
             if !reg.legal(&o) {
+                if dbg {
+                    eprintln!("   seed illegal");
+                }
                 continue;
+            }
+            if dbg {
+                eprintln!("   seed -> {:?}", self.try_order(&reg, &o, &wins).map(|x| x.0));
             }
             if let Some((c, code)) = self.try_order(&reg, &o, &wins) {
                 if c < best.0 {

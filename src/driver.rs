@@ -1003,6 +1003,28 @@ fn picks_has(v: &[usize], i: usize) -> bool {
     v.contains(&i)
 }
 
+/// Highest register number `vN` that appears in a program text (0 if none).
+fn max_reg_used(text: &str) -> usize {
+    let b = text.as_bytes();
+    let mut m = 0usize;
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'v' && b[i + 1].is_ascii_digit() && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_')) {
+            let mut j = i + 1;
+            let mut x = 0usize;
+            while j < b.len() && b[j].is_ascii_digit() {
+                x = x * 10 + (b[j] - b'0') as usize;
+                j += 1;
+            }
+            m = m.max(x);
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    m
+}
+
 fn post_sched2(s: &mut Search) {
     if s.size > MID || s.results.is_empty() {
         return;
@@ -1020,8 +1042,17 @@ fn post_sched2(s: &mut Search) {
     let nparams = s.prog.params.len();
     // the three best candidates, plus the two best that spill everything into scratch: their order
     // is only good after this pass moves the loads ahead of their uses
+    if let Some(pth) = std::env::var_os("KOPT_S2FILE") {
+        let text = std::fs::read_to_string(pth).unwrap();
+        let r = sched2::optimize(&text, s.mc, &inputs, 4_000_000);
+        eprintln!("S2FILE result: {}", r.as_deref().unwrap_or("None"));
+    }
     let mut picks: Vec<usize> = idx.iter().take(3).copied().collect();
     picks.extend(idx.iter().copied().filter(|i| !picks_has(&picks, *i) && s.results[*i].desc.contains("spillk: ") && !s.results[*i].desc.contains("spillk: 0")).take(2).collect::<Vec<_>>());
+    // candidates that leave a machine register unused: sched2 can then hoist loads ahead of their uses (prefetch seeds) with the free name
+    let kreg = mc.registers as usize;
+    let more: Vec<usize> = idx.iter().copied().filter(|i| !picks_has(&picks, *i) && max_reg_used(&s.results[*i].text) + 1 < kreg).take(3).collect();
+    picks.extend(more);
     for &i in picks.iter() {
         let text = s.results[i].text.clone();
         let r = catch_unwind(AssertUnwindSafe(|| sched2::optimize(&text, mc, &inputs, 4_000_000)));
