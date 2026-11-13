@@ -646,3 +646,25 @@ cycle. E' is outside the cycle, which now has one entrance. Pure block copying. 
 `irreducible_loop`: 416 -> 200 cycles at P=4 and 608 -> 216 at P=8 (variants; the original was
 slower than the input there before). Tried and dropped: a larger tail-copy size (24) as an extra
 back end changed no result on P in {0,4,8}.
+
+**Reload cache in spill code** (`Variant.reuse`, `ssa::rewrite_spills`). With `reuse = n` the last n
+values loaded from (or stored to) a scratch word stay available for later uses in the block until
+that word is written again, instead of a fresh load per use. The longer live ranges can raise
+register pressure, so it is tried only after the general search, on its final setting (trying it
+early changed the walk's path and made `row_sums` worse). `sched2` also scores each candidate order
+after the block-local reload peephole (`sched2::peep_block`), and the peephole runs once more on the
+result. `spill_storm|default` 5116 -> 3656 cycles.
+
+**Peeling by nest size** (`Variant.peel = 3`, `passes3::peel_const_loops(.., nest = true)`). Fully peels
+constant-trip loops while the *outermost enclosing loop* (the code that repeats) stays within twice
+the cache size counted before clean-up (clean-up roughly halves it), instead of the whole program
+within one cache size. For `matmul4` the inner loop disappears and the outer loop's invariant row
+loads move into registers (unroll-and-jam in effect): `matmul4|wide_fast` 1352 -> 552. The result often
+needs more names than registers, so the pressure settings (`spill`, `hot`, `sched`, `reuse`) are tried
+together with it, again as extra candidates after the main search.
+
+**Dominator computation** (`ir::analyze`). The intersect step marks the nodes it climbs while it
+handles one join block, so a join with tens of thousands of predecessors costs linear instead of
+quadratic time (`large_nest`: 25 s -> 1.2 s). `large::too_hostile` now triggers at a fan-in of 40000
+(`KOPT_HOSTILE=n` overrides it).
+

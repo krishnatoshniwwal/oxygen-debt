@@ -24,7 +24,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 /// One setting of the optimizer's knobs.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Variant {
-    pub peel: u8,     // 0 = off, 1 = within the instruction cache, 2 = loose
+    pub peel: u8,     // 0 = off, 1 = within the instruction cache, 2 = loose, 3 = the enclosing loop nest stays within the instruction cache
     pub unroll: usize, // loop unrolling factor applied before the second SSA round
     pub ifc: usize,   // if-conversion: max instructions per side (0 = off)
     pub sched: bool,
@@ -229,14 +229,14 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     phase_a(&mut f, v, light);
     prof("phase_a total", &mut t);
     if v.peel != 0 {
-        let budget = if v.peel == 1 { ic } else { (4 * ic).max(256) } as usize;
+        let budget = if v.peel == 1 { ic } else if v.peel == 3 { 2 * ic } else { (4 * ic).max(256) } as usize; // peel 3: sizes are counted before clean-up, which roughly halves them
         for _ in 0..4 {
             let trips = passes3::find_const_trips(&mut f, 64);
             if trips.is_empty() {
                 break;
             }
             ssa::destruct_ssa(&mut f);
-            let ch = passes3::peel_const_loops(&mut f, &trips, budget, 16);
+            let ch = passes3::peel_const_loops(&mut f, &trips, budget, 16, v.peel == 3);
             ssa::build_ssa(&mut f);
             phase_a(&mut f, v, false);
             if !ch {
@@ -778,7 +778,7 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
             for ifc in [0, 4] {
                 nb.push(Variant { ifc, ..b });
             }
-            for pl in [0u8, 1, 2] {
+            for pl in [0u8, 1, 2, 3] {
                 nb.push(Variant { peel: pl, ..b });
             }
             nb.push(Variant { sched: !b.sched, ..b });
@@ -829,6 +829,29 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         if let Some(sc) = s.run(&v, BACKENDS[0]) {
             if state.1.map_or(true, |b| sc < b - 1e-9) {
                 *state = (v, Some(sc));
+            }
+        }
+    }
+    if size <= MID && std::env::var_os("KOPT_NOPEEL3").is_none() {
+        // Full peeling of inner constant-trip loops while the enclosing nest fits the cache
+        // (unroll-and-jam in effect: the outer loop's invariant loads end up in registers). Such a
+        // candidate often needs more names than registers, which the walk's neighbours would only
+        // fix if it were already the best, so the pressure settings are tried together with it.
+        let b = state.0;
+        for sp in [false, true] {
+            for hot in [false, true] {
+                for sch in [true, false] {
+                    let v = Variant { peel: 3, spill: sp, hot, sched: sch, ..b };
+                    if v != b {
+                        consider2(&mut s, &mut state, v);
+                    }
+                }
+            }
+        }
+        let cur = state.0;
+        if cur.peel == 3 {
+            for r in [2u8, 3] {
+                consider2(&mut s, &mut state, Variant { spill: true, reuse: r, ..cur });
             }
         }
     }

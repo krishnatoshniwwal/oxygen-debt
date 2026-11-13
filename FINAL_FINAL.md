@@ -21,7 +21,7 @@ If this file and the separate files ever disagree, this file is the newer one. T
 
 | Item | State |
 |---|---|
-| kopt v2 (Rust) | **Not started.** No Rust code exists yet. The current optimizer in `src/` is the Python v1. |
+| kopt v2 (Rust) | **Built and working** (std-only Rust in `src/`; the Python v1 is in `pyref/`). See `HANDOFF.md` for the current state, branches and measurements. |
 | Plan | **Complete** (Part 1). Every key decision has a verdict, evidence, a confidence level and the condition that would flip it. |
 | Review | **Complete for topics 1–12**, two passes, with a second citation audit (Part 3). |
 | Measurements | 13 experiment scripts against the exact cost model `kit/kirlib.py` (Part 2). Every variant's output was checked equal to the original program. |

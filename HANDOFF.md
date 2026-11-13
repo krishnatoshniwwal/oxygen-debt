@@ -1,4 +1,4 @@
-# HANDOFF — kopt optimizer, state on 2026-11-13
+# HANDOFF — kopt optimizer, state on 2026-11-13 (updated at the end; see "Update" below)
 
 Read this first, then `DESIGN.md` (how kopt works) and `FINAL_FINAL.md` (the full plan:
 Part 1 §1 machine laws, §4 technique verdicts, §7 build order, §11 experiments).
@@ -86,3 +86,21 @@ bounds_trap 3.2%, crc_bitwise 2.7%, strength_ladder 2.5%, vending_fsm 2.5%, conv
   confirmed they are allowed.
 - Local sessions here could not `git commit` (the auto-mode classifier blocked it); the manager
   committed for them. Commits named "WIP checkpoint by manager" may not build on their own.
+
+## Update (branch `merge/scratch-peephole`, on top of main)
+
+Merged and checked (regression 0 failures, nothing slower than the original, fuzz clean): scratch
+peephole (`claude/regs-sched`), `iv_divmod` (`claude/algebra`), node splitting
+(`claude/layout-control`). New work on the branch: linear-time dominators + `too_hostile` raised to 40000
+(`large_nest`: 100,003 -> 71 instructions), peephole after sched2 and inside its search, the reload
+cache `Variant.reuse`, and `peel = 3` (see DESIGN.md). Sample cycles on the bench: 76,875 -> about 74,850.
+Still unmerged: `claude/midend-8682d5` (sinking, ~no gain), `claude/large-progs-2-4b8b5d` (nothing).
+
+Open items:
+- Latent miscompile, **caught by the self-check** (so never written out): fuzz case `g63000338` (kfuzz gen
+  seed 63) - a program that reads registers before writing them; candidates with `spill: true` loop
+  forever (tested back to commit 56e0724). Worth a fix; `out/kfuzz/fail/gen/g63000338.min.kir`.
+- `large_chain` (100k dependent straight-line ops) is unchanged by kopt.
+- `spill_storm|few_registers` still does ~21 loads per iteration where a rolling-window order needs ~12.
+- Search order matters: the walk in `driver.rs` is greedy, so new settings that need other settings to pay
+  off (peel 3 + spill, reuse) are tried as extra candidates after it.
