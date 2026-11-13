@@ -732,10 +732,10 @@ pub const SCRATCH_WORDS: usize = 1024;
 /// that scratch memory is free): if more than k names are needed, first keep the n-th value
 /// of the hottest blocks' live-in values (least-touched first) in scratch memory. Which one
 /// pays is measured by the search. Returns the number of names.
-pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: usize, reuse: usize) -> Result<i64, String> {
+pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: usize, reuse: usize, spillk: usize) -> Result<i64, String> {
     let mut nospill: HashSet<i64> = HashSet::new();
     let mut nslots = 0usize;
-    if force > 0 && k.is_some() {
+    if (force > 0 || spillk > 0) && k.is_some() {
         let mut gg = build_graph(f)?;
         let (_, nc) = colour(&gg);
         if nc as usize > k.unwrap() {
@@ -752,10 +752,13 @@ pub fn allocate(f: &mut Func, k: Option<usize>, spill: bool, hot: bool, force: u
             }
             let mut cl: Vec<i64> = cand.into_iter().filter(|&v| gg.present[v as usize]).collect();
             cl.sort_by(|&a, &b| gg.cost[a as usize].partial_cmp(&gg.cost[b as usize]).unwrap().then(a.cmp(&b)));
-            if let Some(&v) = cl.get(force - 1) {
+            let picks: Vec<i64> = if spillk > 0 { cl.iter().take(spillk).copied().collect() } else { cl.get(force - 1).copied().into_iter().collect() };
+            if !picks.is_empty() {
                 let mut slot_of: HashMap<i64, usize> = HashMap::new();
-                slot_of.insert(v, SCRATCH_BASE + nslots);
-                nslots += 1;
+                for v in picks {
+                    slot_of.insert(v, SCRATCH_BASE + nslots);
+                    nslots += 1;
+                }
                 rewrite_spills(f, &mut gg, &slot_of, &mut nospill, reuse);
             }
         }

@@ -44,13 +44,14 @@ pub struct Variant {
     pub alg: u8,     // loop algebra (algebra.rs), bit 1 = closed forms of polynomial loops
     pub tree: bool,  // tree-height reduction of add/mul/xor/and/or chains
     pub sccp: bool,  // optimistic conditional constant propagation combined with the ranges
+    pub spillk: u8,  // spill code: put the k least-touched loop-carried values in scratch at once (frees names for loads that run ahead)
     pub reuse: u8,   // spill code: keep the last n loaded/stored scratch words available for later uses (0 = reload at every use)
     pub thr: u8,     // DFA jump threading: split code by the known value of 1 or 2 state registers (control.rs)
 }
 
 impl Default for Variant {
     fn default() -> Variant {
-        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0, reuse: 0 }
+        Variant { peel: 1, unroll: 1, ifc: 4, sched: true, mac: true, spill: false, fwd: true, spec: 0, hot: false, csub: true, spill1: 0, iv: false, lazy: false, rot: 0, gu: 0, acc: 0, sr: false, alg: 0, tree: false, sccp: true, thr: 0, reuse: 0, spillk: 0 }
     }
 }
 
@@ -323,7 +324,7 @@ fn midend(prog: &Program, mc: &Machine, v: &Variant, light: bool) -> Result<Func
     prof("destruct_ssa", &mut t);
     let k = mc.registers as usize;
     let force = if scratch_ok { v.spill1 as usize } else { 0 };
-    f.nreg = ssa::allocate(&mut f, Some(k), v.spill && scratch_ok, v.hot, force, v.reuse as usize)?;
+    f.nreg = ssa::allocate(&mut f, Some(k), v.spill && scratch_ok, v.hot, force, v.reuse as usize, if scratch_ok { v.spillk as usize } else { 0 })?;
     prof("allocate", &mut t);
     backend::final_cleanup(&mut f);
     prof("final_cleanup", &mut t);
@@ -867,13 +868,21 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
         }
         for base in bases {
             for r in [2u8, 3, 4] {
-                let v = Variant { spill: true, reuse: r, ..base };
-                if v != b {
-                    consider2(&mut s, &mut state, v);
+                // program order (sched: false) keeps a rolling pattern of loads; scheduling hoists
+                // the loads and stretches the live ranges
+                for sch in [base.sched, false] {
+                    let v = Variant { spill: true, reuse: r, sched: sch, ..base };
+                    if v != b {
+                        consider2(&mut s, &mut state, v);
+                    }
                 }
-            }
-            if base.spill {
-                continue;
+                // also spill one more value, so that a third temporary is free for loads that run ahead
+                for s1 in [1u8, 2, 3, 6, 12, 13, 14] {
+                    let v = Variant { spill: true, reuse: r, sched: false, spillk: s1, ..base };
+                    if v != b {
+                        consider2(&mut s, &mut state, v);
+                    }
+                }
             }
         }
     }
@@ -960,6 +969,10 @@ pub fn optimize(text: &str, mc: &Machine, profile_text: Option<&str>) -> Result<
 
 /// sched2 (exact-cost reordering and renaming) on the best candidates found so far. Each result
 /// is a new candidate: it is kept only if it measures faster, like every other candidate.
+fn picks_has(v: &[usize], i: usize) -> bool {
+    v.contains(&i)
+}
+
 fn post_sched2(s: &mut Search) {
     if s.size > MID || s.results.is_empty() {
         return;
@@ -975,7 +988,11 @@ fn post_sched2(s: &mut Search) {
     });
     let mc = s.mc;
     let nparams = s.prog.params.len();
-    for &i in idx.iter().take(3) {
+    // the three best candidates, plus the two best that spill everything into scratch: their order
+    // is only good after this pass moves the loads ahead of their uses
+    let mut picks: Vec<usize> = idx.iter().take(3).copied().collect();
+    picks.extend(idx.iter().copied().filter(|i| !picks_has(&picks, *i) && s.results[*i].desc.contains("spillk: ") && !s.results[*i].desc.contains("spillk: 0")).take(2).collect::<Vec<_>>());
+    for &i in picks.iter() {
         let text = s.results[i].text.clone();
         let r = catch_unwind(AssertUnwindSafe(|| sched2::optimize(&text, mc, &inputs, 4_000_000)));
         let t2 = match r {

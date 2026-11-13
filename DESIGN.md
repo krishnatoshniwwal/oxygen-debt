@@ -668,3 +668,12 @@ handles one join block, so a join with tens of thousands of predecessors costs l
 quadratic time (`large_nest`: 25 s -> 1.2 s). `large::too_hostile` now triggers at a fan-in of 40000
 (`KOPT_HOSTILE=n` overrides it).
 
+**Spilling more, in program order** (`Variant.spillk`, `ssa::allocate`). `spillk = k` moves the k least-touched
+loop-carried values of the hottest blocks into scratch at once, so that more names are free as
+temporaries. Tried after the general search together with `reuse` and `sched: false` (program order keeps
+the rolling pattern "load old x_i+1, update x_i, store" that the scheduler would otherwise break), and
+`sched2` also runs on the best two such candidates. `spill_storm|no_fused` 5944 -> 4764,
+`spill_storm|few_registers` 6592 -> 5964, `poly_mac|few_registers` 144 -> 80. A hand-written loop that
+prefetches the loads two statements ahead with three temporaries reaches 3497 cycles at n=63 on
+`few_registers` against 4587 now: the remaining gap needs a pass that hoists spill loads by a fixed distance.
+
