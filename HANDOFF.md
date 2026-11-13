@@ -107,6 +107,15 @@ statements when prefetching is wanted and let sched2 hoist; (b) a dedicated pass
 with an explicit 3-name rotation; (c) let `name_block` rename the loop counter too.
 Value: `spill_storm` is ~8 % of all cycles, so the potential is roughly 0.5-1 % of the total.
 
+### 5.1b Evaluated in loop iteration 4, no code change (do not repeat)
+* **Worst remaining ratios** (optimized/original, current `main`): `factorial_mod` 0.63-0.79 on every machine, `multi_exit` 0.41-0.66,
+  `rle_encode|few_registers` 0.42, `sieve|slow_memory` 0.41. Everything else is below 0.4.
+* **`factorial_mod`**: the loop-carried chain is `mul` (3) + `mod 1000003` (12) = 15 cycles per iteration. `mod` by a
+  constant cannot use the 32-bit multiply-shift magic (the product is up to 2^25, too large for `x*M < 2^32`). The split
+  form `((x>>k)*M)>>s` plus a correction step costs `shr, mul, shr, mul, sub, lt/sel` ~ 12-15 cycles on the same chain, so no gain.
+  Only a `mulhi`-style instruction would change that, and KIR has none. Dead end unless the trip count (<= 31) can be used.
+* **`multi_exit`**: already 4x unrolled with the exit tests kept; the dependent `addsh/add` chain per step bounds it.
+* **`sieve`**: the inner `while` is unrolled 8x already; the remaining cost is the stores (1 per cycle) and the loop-entry tests.
 ### 5.2 Other cycle sinks (sum over machines and inputs, before this session's work)
 `sieve` ~8.8 %, `bubble_sort` 6.5 %, `matmul4` 4.2 % (now less), `count_divisors` 3.6 %, `transpose8` 3.6 %,
 `bounds_trap` 3.2 %, `crc_bitwise` 2.7 %, `strength_ladder` 2.5 %, `vending_fsm` 2.5 %, `conv_mac` 2.4 %.
