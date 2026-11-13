@@ -33,7 +33,7 @@ pub fn hard_limit_ms(ninstr: usize) -> u64 {
         return v;
     }
     if ninstr < 40_000 {
-        2_600
+        3_800
     } else {
         25_000
     }
